@@ -308,6 +308,7 @@ class Lc79Session {
       }
     });
     this._eioReady = false; // chờ server gửi "0{...}" trước
+    this._wsConnected = false;
 
     this.ws.on('open', () => {
       addLog('info', '🔗 TCP kết nối — chờ EIO handshake...');
@@ -348,6 +349,7 @@ class Lc79Session {
 
       // Namespace connect confirm "40/txmd5" → log ok
       if (m.startsWith('40/txmd5')) {
+        this._wsConnected = true;
         addLog('info', '✅ Namespace /txmd5 xác nhận — đã vào phòng');
         broadcastState();
         return;
@@ -364,6 +366,7 @@ class Lc79Session {
     });
     this.ws.on('close', () => {
       clearInterval(this.pingInterval);
+      this._wsConnected = false;
       this.bettingOpen = false;
       this.betPending = false;
       if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
@@ -390,6 +393,7 @@ class Lc79Session {
     if (['tick-update','summary-winner','ping','pong','heartbeat'].includes(event)) return;
 
     if (event === 'your-info') {
+      this._wsConnected = true; // nhận được data = chắc chắn đang connected
       this.balance = data.balance || 0;
       this.nickname = data.nickname || this.nickname;
       broadcastState();
@@ -528,7 +532,7 @@ class Lc79Session {
 
   getState() {
     return {
-      connected: this.running && this.ws?.readyState === WebSocket.OPEN,
+      connected: this.running && this._wsConnected,
       nickname: this.nickname,
       balance: this.balance,
       sessionId: this.sessionId,
