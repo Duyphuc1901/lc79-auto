@@ -1,0 +1,8 @@
+node_modules/
+client/node_modules/
+server/node_modules/
+client/dist/
+*.log
+vip_users.json
+user_profiles.json
+bot_errors.log
