@@ -330,9 +330,21 @@ class Lc79Session {
     this.ws.on('close', () => {
       clearInterval(this.pingInterval);
       this.bettingOpen = false;
-      this.running = false;
-      addLog('warn', '🔌 WebSocket đóng');
+      this.betPending = false;
+      if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
+      if (!this.running) {
+        addLog('info', '🔌 WebSocket đã đóng (chủ động)');
+        broadcastState();
+        return;
+      }
+      addLog('warn', '🔌 WebSocket đứt — tự kết nối lại sau 5 giây...');
       broadcastState();
+      this._reconnectTimer = setTimeout(() => {
+        if (this.running) {
+          addLog('info', '🔄 Đang kết nối lại...');
+          this.connect();
+        }
+      }, 5000);
     });
     this.ws.on('error', (e) => {
       addLog('error', `❌ WS lỗi: ${e.message}`);
@@ -471,10 +483,11 @@ class Lc79Session {
   }
 
   disconnect() {
-    this.running = false;
+    this.running = false;   // set false TRƯỚC khi đóng ws để close handler không reconnect
     this.autoRunning = false;
     clearInterval(this.pingInterval);
     if (this.betTimer) clearTimeout(this.betTimer);
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     if (this.ws) try { this.ws.close(); } catch(e) {}
   }
 
