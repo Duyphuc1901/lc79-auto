@@ -301,28 +301,63 @@ class Lc79Session {
 
   connect() {
     const wsUrl = 'wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket';
-    this.ws = new WebSocket(wsUrl);
-    this.ws.on('open', () => {
-      addLog('info', `✅ WebSocket kết nối thành công`);
-      this.ws.send(`40/txmd5,{"token":"${this.token}"}`);
-      setTimeout(() => { this.ws.send('42/txmd5,["get-current-my-info",null]'); }, 500);
-      setTimeout(() => {
-        this.ws.send('42/txmd5,["join-room",null]');
-        this.ws.send('42/txmd5,["get-current-session",null]');
-        this.ws.send('42/txmd5,["get-his-bet",null]');
-      }, 800);
-      this.pingInterval = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send('2');
-      }, 25000);
+    this.ws = new WebSocket(wsUrl, {
+      headers: {
+        'Origin': 'https://lc79b.bet',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
     });
+    this._eioReady = false; // chờ server gửi "0{...}" trước
+
+    this.ws.on('open', () => {
+      addLog('info', '🔗 TCP kết nối — chờ EIO handshake...');
+      // KHÔNG gửi gì ở đây — đợi server gửi "0{...}" trước
+    });
+
     this.ws.on('message', (msg) => {
       const m = msg.toString();
-      if (m.startsWith('2')) { this.ws.send('3'); return; }
-      if (!m.startsWith('42')) return;
+
+      // EIO open packet: "0{...}" — server gửi đầu tiên
+      if (m.startsWith('0') && !this._eioReady) {
+        this._eioReady = true;
+        addLog('info', '✅ EIO handshake OK — gửi auth token');
+        // Gửi namespace connect với token
+        this.ws.send(`40/txmd5,{"token":"${this.token}"}`);
+        // Sau 600ms gửi các lệnh init
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('42/txmd5,["get-current-my-info",null]');
+          }
+        }, 600);
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('42/txmd5,["join-room",null]');
+            this.ws.send('42/txmd5,["get-current-session",null]');
+            this.ws.send('42/txmd5,["get-his-bet",null]');
+          }
+        }, 1000);
+        // Bật ping interval
+        this.pingInterval = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send('2');
+        }, 20000);
+        return;
+      }
+
+      // EIO ping "2" → pong "3"
+      if (m === '2') { this.ws.send('3'); return; }
+
+      // Namespace connect confirm "40/txmd5" → log ok
+      if (m.startsWith('40/txmd5')) {
+        addLog('info', '✅ Namespace /txmd5 xác nhận — đã vào phòng');
+        broadcastState();
+        return;
+      }
+
+      // Socket.IO event "42/txmd5,[...]"
+      if (!m.startsWith('42/txmd5,')) return;
       try {
-        const raw = m.slice(2);
-        const bracket = raw.indexOf('[');
-        const arr = JSON.parse(raw.slice(bracket));
+        const jsonPart = m.slice('42/txmd5,'.length);
+        const arr = JSON.parse(jsonPart);
         if (!Array.isArray(arr) || arr.length < 2) return;
         this._handleEvent(arr[0], typeof arr[1] === 'object' ? arr[1] : {});
       } catch(e) {}
