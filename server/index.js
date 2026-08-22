@@ -645,10 +645,11 @@ app.get('/api/predict', (req, res) => {
   res.json(predictNext(globalHistory));
 });
 
-// Serve React build
-app.use(express.static(path.join(__dirname, '../client/dist')));
+// Serve React build (dist được mv vào server/dist khi build)
+const distPath = path.join(__dirname, 'dist');
+app.use(express.static(distPath));
 app.get('*', (req, res) => {
-  res.sendFile(path.join(__dirname, '../client/dist/index.html'));
+  res.sendFile(path.join(distPath, 'index.html'));
 });
 
 server.listen(PORT, () => {
