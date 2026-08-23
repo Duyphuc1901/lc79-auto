@@ -311,8 +311,7 @@ class Lc79Session {
     this._wsConnected = false;
 
     this.ws.on('open', () => {
-      addLog('info', '🔗 TCP kết nối — chờ EIO handshake...');
-      // KHÔNG gửi gì ở đây — đợi server gửi "0{...}" trước
+      // chờ EIO handshake — không log
     });
 
     this.ws.on('message', (msg) => {
@@ -321,7 +320,7 @@ class Lc79Session {
       // EIO open packet: "0{...}" — server gửi đầu tiên
       if (m.startsWith('0') && !this._eioReady) {
         this._eioReady = true;
-        addLog('info', '✅ EIO handshake OK — gửi auth token');
+        // EIO OK — gửi token
         // Gửi namespace connect với token
         this.ws.send(`40/txmd5,{"token":"${this.token}"}`);
         // Sau 600ms gửi các lệnh init
@@ -353,7 +352,7 @@ class Lc79Session {
       // Namespace connect confirm "40/txmd5" → log ok
       if (m.startsWith('40/txmd5')) {
         this._wsConnected = true;
-        addLog('info', '✅ Namespace /txmd5 xác nhận — đã vào phòng');
+        addLog('info', '✅ Đã kết nối LC79');
         broadcastState();
         return;
       }
@@ -374,16 +373,16 @@ class Lc79Session {
       this.betPending = false;
       if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
       if (!this.running) {
-        addLog('info', '🔌 WebSocket đã đóng (chủ động)');
+        // WS đóng chủ động
         broadcastState();
         return;
       }
       const wasAuto = this.autoRunning; // giữ trạng thái auto
-      addLog('warn', '🔌 WebSocket đứt — tự kết nối lại sau 5 giây...');
+      // WS đứt — tự reconnect, không log
       broadcastState();
       this._reconnectTimer = setTimeout(() => {
         if (this.running) {
-          addLog('info', '🔄 Đang kết nối lại...');
+          // reconnect...
           this.autoRunning = wasAuto; // khôi phục auto sau reconnect
           this.connect();
         }
@@ -462,13 +461,17 @@ class Lc79Session {
     }
 
     else if (event === 'won-session') {
-      const prize = data.prize || 0;
-      this.balance = data.balance || this.balance;
+      addLog('info', `📦 won-session: ${JSON.stringify(data).slice(0,120)}`);
+      const prize = data.prize ?? data.winAmount ?? data.amount ?? 0;
+      const balanceAfter = data.balance ?? data.newBalance ?? data.currentBalance ?? 0;
+      if (balanceAfter) this.balance = balanceAfter;
       const won = prize > 0;
-      if (won) { this.statWin++; this.statProfit += prize; }
-      else { this.statLose++; this.statProfit += prize; }
+      if (this.sessionPlaced || this.lastBetType) {
+        if (won) { this.statWin++; this.statProfit += prize; }
+        else { this.statLose++; this.statProfit += Math.abs(prize) * -1; }
+      }
       const icon = won ? '✅ THẮNG' : '❌ THUA';
-      addLog(won ? 'win' : 'lose', `${icon} | ${prize > 0 ? '+' : ''}${prize.toLocaleString()}đ | Tổng P/L: ${this.statProfit.toLocaleString()}đ`);
+      addLog(won ? 'win' : 'lose', `${icon} | ${won ? '+' : '-'}${Math.abs(prize).toLocaleString()}đ | P/L: ${this.statProfit >= 0 ? '+' : ''}${this.statProfit.toLocaleString()}đ`);
       if (this.autoRunning && this.x2Enabled) {
         if (won) { this.currentAmount = this.baseAmount; this.x2Level = 0; this.x2Pending = false; this.lastLossAmount = 0; }
         else { this.lastLossAmount = Math.abs(prize) || this.currentAmount; this.x2Pending = true; }
@@ -487,7 +490,7 @@ class Lc79Session {
         this.betPending = false;
         this.sessionPlaced = true;
         if (data.postBalance != null) this.balance = data.postBalance;
-        addLog('bet', `💰 Đặt cược: ${data.type} | ${(data.amount || 0).toLocaleString()}đ`);
+        // bet confirm — đã log khi gửi lệnh
         broadcastState();
       }
     }
@@ -519,7 +522,7 @@ class Lc79Session {
         this.betPending = false;
         this.sessionPlaced = true;
       }, 8000);
-      addLog('bet', `⏳ Gửi lệnh ${side} | ${amount.toLocaleString()}đ`);
+      addLog('bet', `🎯 ${side} | ${amount.toLocaleString()}đ`);
     } catch(e) {
       addLog('error', `❌ Lỗi gửi lệnh: ${e.message}`);
       this.autoRunning = false;
