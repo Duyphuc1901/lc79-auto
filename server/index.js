@@ -645,11 +645,267 @@ app.get('/api/predict', (req, res) => {
   res.json(predictNext(globalHistory));
 });
 
-// Serve React build (dist được mv vào server/dist khi build)
-const distPath = path.join(__dirname, 'dist');
-app.use(express.static(distPath));
-app.get('*', (req, res) => {
-  res.sendFile(path.join(distPath, 'index.html'));
+// Serve inline HTML — không cần build React
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AutoLC Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0c0f;--surface:#111418;--border:#1e2530;--muted:#2a3040;--text:#d4dbe8;--dim:#6b7a96;--tai:#00d48a;--xiu:#ff4f6a;--gold:#f0b429;--blue:#4a9eff;--mono:'IBM Plex Mono',monospace;--sans:'Inter',sans-serif}
+html,body{min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--sans)}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#2a3040;border-radius:2px}
+header{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:52px;border-bottom:1px solid var(--border);background:rgba(17,20,24,.95);position:sticky;top:0;z-index:10}
+.logo{font-family:var(--mono);font-weight:600;font-size:16px;letter-spacing:2px}
+.logo span{color:var(--gold)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin:0 6px}
+.dim{color:var(--dim);font-size:12px}
+nav button{background:transparent;border:none;color:var(--dim);padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans)}
+nav button.active{color:var(--text);background:var(--muted)}
+main{max-width:1100px;margin:0 auto;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.card-head{font-size:11px;font-weight:600;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border:none}
+.mono{font-family:var(--mono);font-size:13px}
+.tai{color:var(--tai)}.xiu{color:var(--xiu)}.gold{color:var(--gold)}.blue{color:var(--blue)}
+.pred-val{font-family:var(--mono);font-weight:700;font-size:44px;text-align:center;padding:10px 0}
+.chip{font-family:var(--mono);font-size:11px;background:var(--muted);padding:2px 8px;border-radius:4px;color:var(--gold)}
+.btn{width:100%;padding:11px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;margin-top:10px;font-family:var(--sans)}
+.btn-green{background:rgba(0,212,138,.15);color:var(--tai);border:1px solid rgba(0,212,138,.3)}
+.btn-red{background:rgba(255,79,106,.15);color:var(--xiu);border:1px solid rgba(255,79,106,.3)}
+.btn-blue{background:var(--blue);color:#fff}
+.stat-row{display:flex;gap:8px}
+.stat-box{flex:1;background:var(--muted);border-radius:8px;padding:10px 8px;text-align:center}
+.stat-box .val{font-family:var(--mono);font-size:20px}
+.beads{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.bead{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:var(--mono);font-weight:600}
+.log-box{height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:8px}
+.log-row{display:flex;gap:8px;font-size:12px;font-family:var(--mono)}
+.log-time{color:var(--dim);white-space:nowrap;font-size:11px}
+.full{grid-column:1/-1}
+input,select{background:var(--muted);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:13px;width:100%;font-family:var(--mono);outline:none;margin-bottom:8px}
+label{font-size:12px;color:var(--dim);display:block;margin-bottom:4px}
+.toggle{padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none}
+.tog-on{background:rgba(0,212,138,.2);color:var(--tai);border:1px solid rgba(0,212,138,.4)}
+.tog-off{background:var(--muted);color:var(--dim);border:1px solid var(--border)}
+.views>div{display:none}.views>div.show{display:block}
+.err{color:var(--xiu);font-size:13px;margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center">
+    <span class="logo">◈ AUTO<span>LC</span></span>
+    <span class="dot" id="wsDot" style="background:var(--xiu)"></span>
+    <span class="dim" id="wsLabel">Đang kết nối...</span>
+  </div>
+  <nav>
+    <button class="active" onclick="showView('dashboard',this)">📊 Dashboard</button>
+    <button onclick="showView('config',this)">⚙️ Cấu hình</button>
+    <button id="loginBtn" onclick="showView('login',this)" style="color:var(--tai)">🔐 Đăng nhập</button>
+  </nav>
+</header>
+<main>
+<div class="views">
+
+<!-- DASHBOARD -->
+<div id="v-dashboard" class="show">
+  <div class="grid">
+    <div class="card">
+      <div class="card-head">👤 Tài khoản</div>
+      <div class="row"><span class="dim">Nickname</span><span class="mono" id="d-nick">—</span></div>
+      <div class="row"><span class="dim">Số dư</span><span class="mono gold" id="d-bal" style="font-size:18px">—</span></div>
+      <div class="row"><span class="dim">Trạng thái</span><span id="d-conn">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head">🔮 Dự đoán AI</div>
+      <div class="pred-val" id="d-pred">—</div>
+      <div style="text-align:center;font-size:13px;color:var(--dim);margin-bottom:8px">Độ tin cậy <span class="gold mono" id="d-conf">—</span></div>
+      <div class="row"><span class="dim">Chế độ</span><span class="chip" id="d-regime">—</span></div>
+      <div class="row"><span class="dim">Tín hiệu</span><span class="mono" id="d-sig">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head">🤖 Auto Cược</div>
+      <div class="row"><span class="dim">Trạng thái</span><span id="d-auto">○ Dừng</span></div>
+      <div class="row"><span class="dim">Mức cược</span><span class="mono" id="d-amount">—</span></div>
+      <div class="row"><span class="dim">Phiên</span><span class="mono" id="d-session">—</span></div>
+      <div class="row" id="d-x2row" style="display:none"><span class="dim">Gấp thếp</span><span class="mono" id="d-x2">—</span></div>
+      <button class="btn btn-green" id="autoBtn" onclick="toggleAuto()">▶ Bật Auto</button>
+    </div>
+    <div class="card">
+      <div class="card-head">📈 Thống kê</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="val tai" id="d-win">0</div><div class="dim">Thắng</div></div>
+        <div class="stat-box"><div class="val xiu" id="d-lose">0</div><div class="dim">Thua</div></div>
+        <div class="stat-box"><div class="val" id="d-pl" style="font-size:14px">0</div><div class="dim">P/L(đ)</div></div>
+      </div>
+      <div class="beads" id="d-beads"></div>
+    </div>
+    <div class="card full">
+      <div class="card-head">📋 Nhật ký</div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div id="v-login" style="max-width:400px;margin:50px auto">
+  <div class="card">
+    <div class="card-head">🔐 Đăng nhập LC79</div>
+    <label>Tên đăng nhập</label>
+    <input id="i-user" placeholder="username"/>
+    <label>Mật khẩu</label>
+    <input id="i-pass" type="password" placeholder="••••••••"/>
+    <div class="err" id="loginErr"></div>
+    <button class="btn btn-blue" onclick="doLogin()">🔐 Đăng nhập</button>
+    <button class="btn" style="background:var(--muted);color:var(--dim);margin-top:6px" onclick="doLogout()">👋 Đăng xuất</button>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div id="v-config" style="max-width:440px;margin:50px auto">
+  <div class="card">
+    <div class="card-head">⚙️ Cấu hình Bot</div>
+    <label>Mức cược (đ)</label>
+    <input id="c-amount" type="number" value="1000"/>
+    <label>Stop-loss (%)</label>
+    <input id="c-stop" type="number" value="30"/>
+    <label>Cầu chốt</label>
+    <select id="c-side">
+      <option value="">🤖 AI tự chọn</option>
+      <option value="TAI">🟢 Luôn TÀI</option>
+      <option value="XIU">🔴 Luôn XỈU</option>
+    </select>
+    <div class="row" style="margin-bottom:8px">
+      <label style="margin:0">Gấp thếp X2</label>
+      <button class="toggle tog-off" id="togX2" onclick="toggleX2()">TẮT</button>
+    </div>
+    <div id="x2Extra" style="display:none">
+      <label>Giới hạn X2 (lần)</label>
+      <input id="c-x2max" type="number" value="5" min="1" max="10"/>
+    </div>
+    <button class="btn btn-blue" onclick="saveConfig()">💾 Lưu cấu hình</button>
+  </div>
+</div>
+
+</div>
+</main>
+<script>
+const LOG_C={info:'#4a9eff',pred:'#f0b429',result:'#d4dbe8',win:'#00d48a',lose:'#ff4f6a',bet:'#c084fc',warn:'#fb923c',error:'#ff4f6a'};
+let st=null,ws=null,x2On=false;
+
+function fmt(n){return Number(n||0).toLocaleString('vi-VN')}
+
+function showView(v,btn){
+  document.querySelectorAll('.views>div').forEach(d=>d.classList.remove('show'));
+  document.getElementById('v-'+v).classList.add('show');
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host);
+  ws.onopen=()=>{document.getElementById('wsDot').style.background='var(--tai)';document.getElementById('wsLabel').textContent='Kết nối'};
+  ws.onclose=()=>{document.getElementById('wsDot').style.background='var(--xiu)';document.getElementById('wsLabel').textContent='Mất kết nối';setTimeout(connect,3000)};
+  ws.onmessage=(e)=>{
+    const msg=JSON.parse(e.data);
+    if(msg.type==='state'){st=msg.data;renderState()}
+    if(msg.type==='logs'){msg.data.forEach(l=>addLog(l,false))}
+    if(msg.type==='log'){addLog(msg.data,true)}
+  };
+}
+
+function renderState(){
+  if(!st)return;
+  document.getElementById('d-nick').textContent=st.nickname||'—';
+  document.getElementById('d-bal').textContent=fmt(st.balance)+'đ';
+  const conn=document.getElementById('d-conn');
+  conn.textContent=st.connected?'🟢 Đang kết nối':'🔴 Mất kết nối';
+  conn.style.color=st.connected?'var(--tai)':'var(--xiu)';
+  const pred=st.lastPred;
+  if(pred){
+    const pEl=document.getElementById('d-pred');
+    pEl.textContent=pred.pred;pEl.className='pred-val '+(pred.pred==='TAI'?'tai':'xiu');
+    document.getElementById('d-conf').textContent=pred.conf+'%';
+    document.getElementById('d-regime').textContent=pred.regime||'—';
+    document.getElementById('d-sig').textContent=pred.n_active+' tích cực';
+  }
+  const autoEl=document.getElementById('d-auto');
+  autoEl.textContent=st.autoRunning?'● ĐANG CHẠY':'○ Dừng';
+  autoEl.style.color=st.autoRunning?'var(--tai)':'var(--dim)';
+  document.getElementById('autoBtn').className='btn '+(st.autoRunning?'btn-red':'btn-green');
+  document.getElementById('autoBtn').textContent=st.autoRunning?'⏹ Dừng Auto':'▶ Bật Auto';
+  document.getElementById('d-amount').textContent=fmt(st.baseAmount)+'đ';
+  document.getElementById('d-session').textContent='#'+(st.sessionId||'—');
+  if(st.x2Enabled){document.getElementById('d-x2row').style.display='flex';document.getElementById('d-x2').textContent='Lv.'+st.x2Level+'/'+st.x2MaxLevel}
+  else{document.getElementById('d-x2row').style.display='none'}
+  document.getElementById('d-win').textContent=st.statWin;
+  document.getElementById('d-lose').textContent=st.statLose;
+  const pl=document.getElementById('d-pl');
+  pl.textContent=(st.statProfit>=0?'+':'')+fmt(st.statProfit);
+  pl.style.color=st.statProfit>=0?'var(--tai)':'var(--xiu)';
+  const beads=document.getElementById('d-beads');
+  beads.innerHTML=(st.recentHistory||[]).slice(-20).map(r=>{
+    const t=r==='TAI';
+    return '<div class="bead" style="background:'+(t?'rgba(0,212,138,.15)':'rgba(255,79,106,.15)')+';color:'+(t?'var(--tai)':'var(--xiu)')+';border:1px solid '+(t?'rgba(0,212,138,.3)':'rgba(255,79,106,.3)')+'">'+( t?'T':'X')+'</div>'
+  }).join('');
+}
+
+function addLog(l,prepend){
+  const box=document.getElementById('logBox');
+  const div=document.createElement('div');div.className='log-row';
+  div.innerHTML='<span class="log-time">'+l.time+'</span><span style="color:'+(LOG_C[l.type]||'var(--text)')+'">'+l.msg+'</span>';
+  if(prepend)box.insertBefore(div,box.firstChild); else box.appendChild(div);
+  if(box.children.length>200)box.lastChild.remove();
+}
+
+async function api(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return r.json();
+}
+
+async function doLogin(){
+  document.getElementById('loginErr').textContent='';
+  const u=document.getElementById('i-user').value,p=document.getElementById('i-pass').value;
+  if(!u||!p){document.getElementById('loginErr').textContent='Nhập đủ thông tin';return}
+  const cfg={baseAmount:+document.getElementById('c-amount').value,x2Enabled:x2On,x2MaxLevel:+document.getElementById('c-x2max').value,stopLossPercent:+document.getElementById('c-stop').value,algoEnabled:true,fixedSide:document.getElementById('c-side').value};
+  document.getElementById('loginErr').textContent='⏳ Đang đăng nhập...';
+  const res=await api('/api/login',{username:u,password:p,config:cfg});
+  if(res.error){document.getElementById('loginErr').textContent=res.error}
+  else{document.getElementById('loginErr').textContent='';showView('dashboard',document.querySelector('nav button'))}
+}
+
+async function doLogout(){await api('/api/logout',{});st=null}
+
+async function toggleAuto(){
+  if(!st)return;
+  await api(st.autoRunning?'/api/auto/stop':'/api/auto/start',{});
+}
+
+function toggleX2(){
+  x2On=!x2On;
+  const btn=document.getElementById('togX2');
+  btn.textContent=x2On?'BẬT':'TẮT';btn.className='toggle '+(x2On?'tog-on':'tog-off');
+  document.getElementById('x2Extra').style.display=x2On?'block':'none';
+}
+
+async function saveConfig(){
+  const cfg={baseAmount:+document.getElementById('c-amount').value,x2Enabled:x2On,x2MaxLevel:+document.getElementById('c-x2max').value,stopLossPercent:+document.getElementById('c-stop').value,algoEnabled:true,fixedSide:document.getElementById('c-side').value};
+  await api('/api/config',cfg);
+  showView('dashboard',document.querySelector('nav button'));
+}
+
+connect();
+</script>
+</body>
+</html>`);
 });
 
 server.listen(PORT, () => {
