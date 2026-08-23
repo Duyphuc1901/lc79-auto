@@ -1,0 +1,913 @@
+const express = require('express');
+const cors = require('cors');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+const path = require('path');
+const axios = require('axios');
+const md5 = require('md5');
+const WebSocket = require('ws');
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+
+const PORT = process.env.PORT || 3000;
+
+// ─── GLOBAL STATE ─────────────────────────────────────────────────────────────
+let globalHistory = [];         // ["TAI","XIU",...]
+let session = null;             // active bot session
+let logs = [];                  // activity log
+
+function addLog(type, msg) {
+  const entry = { time: new Date().toLocaleTimeString('vi-VN'), type, msg };
+  logs.unshift(entry);
+  if (logs.length > 200) logs.pop();
+  broadcast({ type: 'log', data: entry });
+}
+
+// ─── PREDICTION ENGINE (ported from Python V10) ───────────────────────────────
+function detectRegime(seq) {
+  if (seq.length < 10) return 'CHOPPY';
+  const tail = seq.slice(-11);
+  const sr10 = tail.slice(1).filter((v,i) => v !== tail[i]).length / 10;
+  let streak = 1;
+  for (let i = seq.length - 2; i >= 0; i--) {
+    if (seq[i] === seq[seq.length-1]) streak++; else break;
+  }
+  const w20 = seq.slice(-20);
+  const bias = Math.abs(w20.filter(v => v === 'TAI').length / w20.length - 0.5);
+  if (streak >= 4) return 'STREAK';
+  if (sr10 > 0.72) return 'ZIGZAG';
+  if (bias > 0.18) return 'BIASED';
+  return 'CHOPPY';
+}
+
+function backtestSplit(seq, fn, window = 120, cap = 200) {
+  const n = seq.length;
+  const start = Math.max(6, n - window);
+  const mid = Math.floor((start + n) / 2);
+  function run(s, e) {
+    let hits = 0, total = 0;
+    for (let i = s; i < e; i++) {
+      const sub = seq.slice(Math.max(0, i - cap), i);
+      const p = fn(sub);
+      if (p === null) continue;
+      total++;
+      if (p === seq[i]) hits++;
+    }
+    return [hits, total];
+  }
+  const [h1, t1] = run(start, mid);
+  const [h2, t2] = run(mid, n);
+  const total = t1 + t2;
+  if (total < 10) return [null, total, 0];
+  const acc = (h1 + h2) / total;
+  const acc1 = t1 >= 5 ? h1/t1 : null;
+  const acc2 = t2 >= 5 ? h2/t2 : null;
+  const consistency = (acc1 && acc2 && acc1 > 0.5 && acc2 > 0.5) ? 1.0 : 0.6;
+  return [acc, total, consistency];
+}
+
+// Signal functions
+function sigWeightedMarkov(order, decay = 0.88) {
+  return (sub) => {
+    if (sub.length <= order + 2) return null;
+    const key = sub.slice(-order).join(',');
+    let wTai = 0, wXiu = 0;
+    const n = sub.length;
+    for (let i = 0; i < n - order; i++) {
+      if (sub.slice(i, i+order).join(',') === key) {
+        const age = n - order - i;
+        const w = Math.pow(decay, age);
+        if (sub[i+order] === 'TAI') wTai += w; else wXiu += w;
+      }
+    }
+    const total = wTai + wXiu;
+    if (total < 1.0) return null;
+    const p = wTai / total;
+    if (p > 0.60) return 'TAI';
+    if (p < 0.40) return 'XIU';
+    return null;
+  };
+}
+
+function sigStreakFollow(sub) {
+  if (sub.length < 2) return null;
+  return sub[sub.length-1];
+}
+
+function sigStreakBreak(minLen) {
+  return (sub) => {
+    if (sub.length < minLen) return null;
+    const last = sub[sub.length-1];
+    let s = 1;
+    for (let i = sub.length-2; i >= 0; i--) {
+      if (sub[i] === last) s++; else break;
+    }
+    if (s < minLen) return null;
+    return last === 'TAI' ? 'XIU' : 'TAI';
+  };
+}
+
+function sigPattern(order) {
+  return (sub) => {
+    if (sub.length <= order) return null;
+    const key = sub.slice(-order).join(',');
+    const c = {};
+    for (let i = 0; i < sub.length - order; i++) {
+      if (sub.slice(i, i+order).join(',') === key) {
+        c[sub[i+order]] = (c[sub[i+order]] || 0) + 1;
+      }
+    }
+    if (!Object.keys(c).length) return null;
+    const total = Object.values(c).reduce((a,b) => a+b, 0);
+    if (total < 3) return null;
+    const best = Object.keys(c).sort((a,b) => c[b]-c[a])[0];
+    if (c[best]/total < 0.60) return null;
+    return best;
+  };
+}
+
+function sigBias(window) {
+  return (sub) => {
+    if (sub.length < window) return null;
+    const rt = sub.slice(-window).filter(v => v === 'TAI').length / window;
+    if (rt > 0.62) return 'XIU';
+    if (rt < 0.38) return 'TAI';
+    return null;
+  };
+}
+
+function sigZigzagPersist(sub) {
+  if (sub.length < 8) return null;
+  const sr6 = Array.from({length:6}, (_,i) => sub[sub.length-1-i] !== sub[sub.length-2-i]).filter(Boolean).length / 6;
+  if (sr6 < 0.65) return null;
+  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
+}
+
+function sigMomentumDecay(sub) {
+  if (sub.length < 20) return null;
+  const runs = [];
+  let cv = sub[0], cl = 1;
+  for (let i = 1; i < sub.length; i++) {
+    if (sub[i] === cv) cl++;
+    else { runs.push(cl); cv = sub[i]; cl = 1; }
+  }
+  runs.push(cl);
+  if (runs.length < 6) return null;
+  const curStreak = runs[runs.length-1];
+  const sorted = [...runs].sort((a,b)=>a-b);
+  const p80 = sorted[Math.min(sorted.length-1, Math.floor(sorted.length * 0.80))];
+  if (curStreak <= p80) return null;
+  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
+}
+
+const SIGNALS = [
+  ['WM1', sigWeightedMarkov(1), 2.0],
+  ['WM2', sigWeightedMarkov(2), 2.5],
+  ['WM3', sigWeightedMarkov(3), 3.0],
+  ['SF',  sigStreakFollow,       1.5],
+  ['SB3', sigStreakBreak(3),     2.0],
+  ['SB5', sigStreakBreak(5),     2.5],
+  ['SB7', sigStreakBreak(7),     3.0],
+  ['P3',  sigPattern(3),         2.0],
+  ['P4',  sigPattern(4),         2.5],
+  ['P5',  sigPattern(5),         3.0],
+  ['B10', sigBias(10),           1.2],
+  ['B20', sigBias(20),           1.2],
+  ['ZPG', sigZigzagPersist,      2.0],
+  ['MDK', sigMomentumDecay,      2.2],
+];
+
+const REGIME_MULT = {
+  'STREAK:SB': 1.4, 'STREAK:MDK': 1.6, 'STREAK:SF': 0.5,
+  'ZIGZAG:ALT': 1.5, 'ZIGZAG:ZPG': 1.6, 'ZIGZAG:SF': 0.3,
+  'CHOPPY:SF': 0.4,  'BIASED:B': 1.5,
+};
+
+function getRegimeMult(regime, tag) {
+  for (const [k, v] of Object.entries(REGIME_MULT)) {
+    const [r, t] = k.split(':');
+    if (r === regime && tag.startsWith(t)) return v;
+  }
+  return 1.0;
+}
+
+function predictNext(history) {
+  const seq = [...history];
+  if (seq.length < 8) {
+    return { pred: 'TAI', conf: 51, signals: [], n_active: 0, regime: 'INIT' };
+  }
+  const regime = detectRegime(seq);
+  const votes = [];
+  const activeSignals = [];
+  for (const [tag, fn, capW] of SIGNALS) {
+    const [acc, total, consistency] = backtestSplit(seq, fn);
+    if (acc === null || acc <= 0.50) continue;
+    const se = Math.sqrt(0.25 / total);
+    const z = (acc - 0.50) / se;
+    if (z < 2.0) continue;
+    const cur = fn(seq);
+    if (cur === null) continue;
+    const sampleConf = Math.min(1.0, total / 20);
+    const regMult = getRegimeMult(regime, tag);
+    const weight = (acc - 0.50) * 2 * capW * sampleConf * Math.min(1.0, z/2.5) * regMult * consistency;
+    if (weight <= 0.02) continue;
+    votes.push([cur === 'TAI' ? 1.0 : 0.0, weight]);
+    activeSignals.push(`${tag}:${(acc*100).toFixed(0)}%/${total}`);
+  }
+  if (!votes.length) {
+    return { pred: Math.random() > 0.5 ? 'TAI' : 'XIU', conf: 51, signals: [], n_active: 0, regime };
+  }
+  const totalW = votes.reduce((s,[,w]) => s+w, 0);
+  let pTai = votes.reduce((s,[p,w]) => s+p*w, 0) / totalW;
+  pTai = Math.max(0.05, Math.min(0.95, pTai));
+  const pred = pTai >= 0.50 ? 'TAI' : 'XIU';
+  const edge = Math.abs(pTai - 0.50);
+  const conf = Math.round(51 + Math.min(edge / 0.35, 1.0) * 37);
+  return { pred, conf, p_tai: +pTai.toFixed(3), n_active: votes.length, signals: activeSignals, regime };
+}
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+async function loginAndGetToken(username, password) {
+  const pwMd5 = md5(password);
+  try {
+    const r1 = await axios.get(
+      `https://apifo88daigia.tele68.com/api?c=3&un=${username}&pw=${pwMd5}&cp=R&cl=R&pf=web&at=`,
+      { timeout: 12000 }
+    );
+    const data = r1.data;
+    if (!data.success) throw new Error(data.message || 'Sai tài khoản/mật khẩu');
+    const sessionData = JSON.parse(Buffer.from(data.sessionKey, 'base64').toString());
+    const nickname = sessionData.nickname;
+    const accessToken = data.accessToken;
+    const r2 = await axios.post(
+      'https://wlb.tele68.com/v1/lobby/auth/login?cp=R&cl=R&pf=web&at=',
+      { nickName: nickname, accessToken },
+      {
+        headers: {
+          'authority': 'wlb.tele68.com',
+          'content-type': 'application/json',
+          'authorization': 'Bearer null',
+          'origin': 'https://lc79b.bet',
+          'referer': 'https://lc79b.bet/',
+          'user-agent': 'Mozilla/5.0',
+        },
+        timeout: 12000
+      }
+    );
+    const lobby = r2.data;
+    if (!lobby.token) throw new Error(lobby.message || 'Lobby không trả token');
+    return { token: lobby.token, nickname, accessToken };
+  } catch (e) {
+    throw new Error(e.message);
+  }
+}
+
+// ─── LC79 BOT SESSION ─────────────────────────────────────────────────────────
+class Lc79Session {
+  constructor(username, password, token, nickname, config) {
+    this.username = username;
+    this.password = password;
+    this.token = token;
+    this.nickname = nickname;
+    this.balance = 0;
+    this.sessionId = null;
+    this.bettingOpen = false;
+    this.autoRunning = false;
+    this.baseAmount = config.baseAmount || 1000;
+    this.currentAmount = config.baseAmount || 1000;
+    this.x2Enabled = config.x2Enabled || false;
+    this.x2Level = 0;
+    this.x2MaxLevel = config.x2MaxLevel || 5;
+    this.x2Pending = false;
+    this.stopLossPercent = config.stopLossPercent || 0.30;
+    this.algoEnabled = config.algoEnabled !== false;
+    this.fixedSide = config.fixedSide || null; // 'TAI' | 'XIU' | null (auto)
+    this.sessionPlaced = false;
+    this.betPending = false;
+    this.statWin = 0;
+    this.statLose = 0;
+    this.statProfit = 0;
+    this.lastBetType = null;
+    this.lastBetAmount = 0;
+    this.lastLossAmount = 0;
+    this.lastPred = null;
+    this.ws = null;
+    this.running = true;
+    this.betTimer = null;
+    this.pingInterval = null;
+  }
+
+  connect() {
+    const wsUrl = 'wss://wtxmd52.tele68.com/txmd5/?EIO=4&transport=websocket';
+    this.ws = new WebSocket(wsUrl, {
+      headers: {
+        'Origin': 'https://lc79b.bet',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+      }
+    });
+    this._eioReady = false; // chờ server gửi "0{...}" trước
+    this._wsConnected = false;
+
+    this.ws.on('open', () => {
+      addLog('info', '🔗 TCP kết nối — chờ EIO handshake...');
+      // KHÔNG gửi gì ở đây — đợi server gửi "0{...}" trước
+    });
+
+    this.ws.on('message', (msg) => {
+      const m = msg.toString();
+
+      // EIO open packet: "0{...}" — server gửi đầu tiên
+      if (m.startsWith('0') && !this._eioReady) {
+        this._eioReady = true;
+        addLog('info', '✅ EIO handshake OK — gửi auth token');
+        // Gửi namespace connect với token
+        this.ws.send(`40/txmd5,{"token":"${this.token}"}`);
+        // Sau 600ms gửi các lệnh init
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('42/txmd5,["get-current-my-info",null]');
+          }
+        }, 600);
+        setTimeout(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send('42/txmd5,["join-room",null]');
+            this.ws.send('42/txmd5,["get-current-session",null]');
+            this.ws.send('42/txmd5,["get-his-bet",null]');
+          }
+        }, 1000);
+        // Bật ping interval
+        this.pingInterval = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send('2');
+        }, 20000);
+        return;
+      }
+
+      // EIO ping "2" → pong "3"
+      if (m === '2') { this.ws.send('3'); return; }
+
+      // Namespace connect confirm "40/txmd5" → log ok
+      if (m.startsWith('40/txmd5')) {
+        this._wsConnected = true;
+        addLog('info', '✅ Namespace /txmd5 xác nhận — đã vào phòng');
+        broadcastState();
+        return;
+      }
+
+      // Socket.IO event "42/txmd5,[...]"
+      if (!m.startsWith('42/txmd5,')) return;
+      try {
+        const jsonPart = m.slice('42/txmd5,'.length);
+        const arr = JSON.parse(jsonPart);
+        if (!Array.isArray(arr) || arr.length < 2) return;
+        this._handleEvent(arr[0], typeof arr[1] === 'object' ? arr[1] : {});
+      } catch(e) {}
+    });
+    this.ws.on('close', () => {
+      clearInterval(this.pingInterval);
+      this._wsConnected = false;
+      this.bettingOpen = false;
+      this.betPending = false;
+      if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
+      if (!this.running) {
+        addLog('info', '🔌 WebSocket đã đóng (chủ động)');
+        broadcastState();
+        return;
+      }
+      addLog('warn', '🔌 WebSocket đứt — tự kết nối lại sau 5 giây...');
+      broadcastState();
+      this._reconnectTimer = setTimeout(() => {
+        if (this.running) {
+          addLog('info', '🔄 Đang kết nối lại...');
+          this.connect();
+        }
+      }, 5000);
+    });
+    this.ws.on('error', (e) => {
+      addLog('error', `❌ WS lỗi: ${e.message}`);
+    });
+  }
+
+  _handleEvent(event, data) {
+    if (['tick-update','summary-winner','ping','pong','heartbeat'].includes(event)) return;
+
+    if (event === 'your-info') {
+      this._wsConnected = true; // nhận được data = chắc chắn đang connected
+      this.balance = data.balance || 0;
+      this.nickname = data.nickname || this.nickname;
+      broadcastState();
+    }
+
+    else if (['session-info','new-session','open-bet','bet-open','start-session'].includes(event)) {
+      this.sessionId = data.id;
+      this.bettingOpen = true;
+      this.sessionPlaced = false;
+      this.betPending = false;
+
+      // Prediction
+      const pred = predictNext(globalHistory);
+      this.lastPred = pred;
+      addLog('pred', `🔮 Phiên #${this.sessionId} | AI: ${pred.pred} (${pred.conf}%) | Chế độ: ${pred.regime} | ${pred.n_active} tín hiệu`);
+      broadcastState();
+
+      // Auto bet
+      if (this.autoRunning && this.baseAmount > 0 && !this.sessionPlaced) {
+        if (this.statProfit < 0 && Math.abs(this.statProfit) > this.balance * this.stopLossPercent) {
+          addLog('warn', `⚠️ Stop-loss kích hoạt. Dừng auto.`);
+          this.autoRunning = false;
+          broadcastState();
+          return;
+        }
+        if (this.x2Enabled && this.x2Pending) {
+          const newAmt = (this.lastLossAmount || this.currentAmount) * 2;
+          if (this.x2Level >= this.x2MaxLevel) {
+            addLog('warn', `❌ Đạt giới hạn x2 (${this.x2MaxLevel} lần). Dừng auto.`);
+            this.autoRunning = false;
+            broadcastState();
+            return;
+          }
+          if (newAmt > this.balance) {
+            this.currentAmount = this.baseAmount;
+            this.x2Level = 0;
+            this.x2Pending = false;
+          } else {
+            this.x2Level++;
+            this.x2Pending = false;
+            this.currentAmount = newAmt;
+          }
+        } else {
+          this.currentAmount = this.baseAmount;
+        }
+        const side = this.fixedSide || pred.pred;
+        this._placeBet(side, this.currentAmount);
+      }
+    }
+
+    else if (['session-result','result','game-result','end-session'].includes(event)) {
+      const result = data.resultTruyenThong;
+      if (result === 'TAI' || result === 'XIU') {
+        globalHistory.push(result);
+        if (globalHistory.length > 400) globalHistory = globalHistory.slice(-400);
+      }
+      const dices = data.dices || [];
+      const total = dices.reduce((s,d) => s+d, 0);
+      addLog('result', `🎲 Phiên #${this.sessionId} | ${dices.join('-')} (${total}) → ${result || '?'}`);
+      broadcastState();
+    }
+
+    else if (event === 'won-session') {
+      const prize = data.prize || 0;
+      this.balance = data.balance || this.balance;
+      const won = prize > 0;
+      if (won) { this.statWin++; this.statProfit += prize; }
+      else { this.statLose++; this.statProfit += prize; }
+      const icon = won ? '✅ THẮNG' : '❌ THUA';
+      addLog(won ? 'win' : 'lose', `${icon} | ${prize > 0 ? '+' : ''}${prize.toLocaleString()}đ | Tổng P/L: ${this.statProfit.toLocaleString()}đ`);
+      if (this.autoRunning && this.x2Enabled) {
+        if (won) { this.currentAmount = this.baseAmount; this.x2Level = 0; this.x2Pending = false; this.lastLossAmount = 0; }
+        else { this.lastLossAmount = Math.abs(prize) || this.currentAmount; this.x2Pending = true; }
+      } else {
+        this.currentAmount = this.baseAmount;
+        this.x2Level = 0;
+        this.x2Pending = false;
+      }
+      this.sessionPlaced = false;
+      broadcastState();
+    }
+
+    else if (event === 'bet') {
+      if (data.type && data.amount != null) {
+        if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
+        this.betPending = false;
+        this.sessionPlaced = true;
+        if (data.postBalance != null) this.balance = data.postBalance;
+        addLog('bet', `💰 Đặt cược: ${data.type} | ${(data.amount || 0).toLocaleString()}đ`);
+        broadcastState();
+      }
+    }
+
+    else if (['bet-error','error'].includes(event)) {
+      this.betPending = false;
+      this.sessionPlaced = false;
+      if (this.autoRunning) { this.autoRunning = false; addLog('error', '⏹ Dừng auto do lỗi cược'); }
+      broadcastState();
+    }
+  }
+
+  _placeBet(side, amount) {
+    if (this.sessionPlaced || !this.bettingOpen || this.betPending) return;
+    if (!['TAI','XIU'].includes(side)) return;
+    if (amount > this.balance) {
+      addLog('warn', `⚠️ Số dư không đủ: cần ${amount.toLocaleString()}đ, dư ${this.balance.toLocaleString()}đ`);
+      this.autoRunning = false;
+      broadcastState();
+      return;
+    }
+    try {
+      const payload = `42/txmd5,["bet",${JSON.stringify({ type: side, amount: Math.floor(amount), referenceId: parseInt(this.sessionId) })}]`;
+      this.ws.send(payload);
+      this.lastBetType = side;
+      this.lastBetAmount = amount;
+      this.betPending = true;
+      this.betTimer = setTimeout(() => {
+        this.betPending = false;
+        this.sessionPlaced = true;
+      }, 8000);
+      addLog('bet', `⏳ Gửi lệnh ${side} | ${amount.toLocaleString()}đ`);
+    } catch(e) {
+      addLog('error', `❌ Lỗi gửi lệnh: ${e.message}`);
+      this.autoRunning = false;
+    }
+  }
+
+  disconnect() {
+    this.running = false;   // set false TRƯỚC khi đóng ws để close handler không reconnect
+    this.autoRunning = false;
+    clearInterval(this.pingInterval);
+    if (this.betTimer) clearTimeout(this.betTimer);
+    if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
+    if (this.ws) try { this.ws.close(); } catch(e) {}
+  }
+
+  getState() {
+    return {
+      connected: this.running && this._wsConnected,
+      nickname: this.nickname,
+      balance: this.balance,
+      sessionId: this.sessionId,
+      bettingOpen: this.bettingOpen,
+      autoRunning: this.autoRunning,
+      baseAmount: this.baseAmount,
+      currentAmount: this.currentAmount,
+      x2Enabled: this.x2Enabled,
+      x2Level: this.x2Level,
+      x2MaxLevel: this.x2MaxLevel,
+      stopLossPercent: this.stopLossPercent,
+      algoEnabled: this.algoEnabled,
+      fixedSide: this.fixedSide,
+      statWin: this.statWin,
+      statLose: this.statLose,
+      statProfit: this.statProfit,
+      lastPred: this.lastPred,
+      sessionPlaced: this.sessionPlaced,
+      historyLen: globalHistory.length,
+      recentHistory: globalHistory.slice(-20),
+    };
+  }
+}
+
+// ─── WEBSOCKET BROADCAST TO DASHBOARD ────────────────────────────────────────
+const server = http.createServer(app);
+const wss = new WebSocketServer({ server });
+const dashboardClients = new Set();
+
+wss.on('connection', (ws) => {
+  dashboardClients.add(ws);
+  ws.send(JSON.stringify({ type: 'state', data: session ? session.getState() : null }));
+  ws.send(JSON.stringify({ type: 'logs', data: logs }));
+  ws.on('close', () => dashboardClients.delete(ws));
+});
+
+function broadcast(msg) {
+  const str = JSON.stringify(msg);
+  for (const ws of dashboardClients) {
+    if (ws.readyState === 1) ws.send(str);
+  }
+}
+
+function broadcastState() {
+  broadcast({ type: 'state', data: session ? session.getState() : null });
+}
+
+// ─── API ROUTES ───────────────────────────────────────────────────────────────
+app.post('/api/login', async (req, res) => {
+  const { username, password, config = {} } = req.body;
+  if (!username || !password) return res.status(400).json({ error: 'Thiếu thông tin' });
+  if (session) { session.disconnect(); session = null; }
+  try {
+    addLog('info', `🔐 Đang đăng nhập: ${username}...`);
+    const auth = await loginAndGetToken(username, password);
+    session = new Lc79Session(username, password, auth.token, auth.nickname, config);
+    session.connect();
+    addLog('info', `✅ Đăng nhập thành công: ${auth.nickname}`);
+    res.json({ ok: true, nickname: auth.nickname });
+  } catch(e) {
+    addLog('error', `❌ Đăng nhập thất bại: ${e.message}`);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post('/api/logout', (req, res) => {
+  if (session) { session.disconnect(); session = null; addLog('info', '👋 Đã đăng xuất'); broadcastState(); }
+  res.json({ ok: true });
+});
+
+app.post('/api/auto/start', (req, res) => {
+  if (!session) return res.status(400).json({ error: 'Chưa đăng nhập' });
+  session.autoRunning = true;
+  addLog('info', '🤖 Bật Auto Cược');
+  broadcastState();
+  res.json({ ok: true });
+});
+
+app.post('/api/auto/stop', (req, res) => {
+  if (!session) return res.status(400).json({ error: 'Chưa đăng nhập' });
+  session.autoRunning = false;
+  addLog('info', '⏹ Dừng Auto Cược');
+  broadcastState();
+  res.json({ ok: true });
+});
+
+app.post('/api/config', (req, res) => {
+  if (!session) return res.status(400).json({ error: 'Chưa đăng nhập' });
+  const { baseAmount, x2Enabled, x2MaxLevel, stopLossPercent, algoEnabled, fixedSide } = req.body;
+  if (baseAmount != null) { session.baseAmount = Number(baseAmount); session.currentAmount = session.baseAmount; }
+  if (x2Enabled != null) session.x2Enabled = x2Enabled;
+  if (x2MaxLevel != null) session.x2MaxLevel = Number(x2MaxLevel);
+  if (stopLossPercent != null) session.stopLossPercent = Number(stopLossPercent) / 100;
+  if (algoEnabled != null) session.algoEnabled = algoEnabled;
+  if (fixedSide != null) session.fixedSide = fixedSide || null;
+  addLog('info', `⚙️ Cập nhật cấu hình`);
+  broadcastState();
+  res.json({ ok: true });
+});
+
+app.get('/api/state', (req, res) => {
+  res.json(session ? session.getState() : null);
+});
+
+app.get('/api/logs', (req, res) => {
+  res.json(logs);
+});
+
+app.get('/api/predict', (req, res) => {
+  res.json(predictNext(globalHistory));
+});
+
+// Serve inline HTML — không cần build React
+app.get('/', (req, res) => {
+  res.send(`<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AutoLC Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0c0f;--surface:#111418;--border:#1e2530;--muted:#2a3040;--text:#d4dbe8;--dim:#6b7a96;--tai:#00d48a;--xiu:#ff4f6a;--gold:#f0b429;--blue:#4a9eff;--mono:'IBM Plex Mono',monospace;--sans:'Inter',sans-serif}
+html,body{min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--sans)}
+::-webkit-scrollbar{width:4px}::-webkit-scrollbar-thumb{background:#2a3040;border-radius:2px}
+header{display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:52px;border-bottom:1px solid var(--border);background:rgba(17,20,24,.95);position:sticky;top:0;z-index:10}
+.logo{font-family:var(--mono);font-weight:600;font-size:16px;letter-spacing:2px}
+.logo span{color:var(--gold)}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin:0 6px}
+.dim{color:var(--dim);font-size:12px}
+nav button{background:transparent;border:none;color:var(--dim);padding:5px 12px;border-radius:6px;font-size:13px;cursor:pointer;font-family:var(--sans)}
+nav button.active{color:var(--text);background:var(--muted)}
+main{max-width:1100px;margin:0 auto;padding:20px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px}
+.card-head{font-size:11px;font-weight:600;color:var(--dim);letter-spacing:1px;text-transform:uppercase;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border)}
+.row{display:flex;justify-content:space-between;align-items:center;padding:7px 0;border-bottom:1px solid var(--border)}
+.row:last-child{border:none}
+.mono{font-family:var(--mono);font-size:13px}
+.tai{color:var(--tai)}.xiu{color:var(--xiu)}.gold{color:var(--gold)}.blue{color:var(--blue)}
+.pred-val{font-family:var(--mono);font-weight:700;font-size:44px;text-align:center;padding:10px 0}
+.chip{font-family:var(--mono);font-size:11px;background:var(--muted);padding:2px 8px;border-radius:4px;color:var(--gold)}
+.btn{width:100%;padding:11px;border-radius:8px;font-size:14px;font-weight:600;cursor:pointer;border:none;margin-top:10px;font-family:var(--sans)}
+.btn-green{background:rgba(0,212,138,.15);color:var(--tai);border:1px solid rgba(0,212,138,.3)}
+.btn-red{background:rgba(255,79,106,.15);color:var(--xiu);border:1px solid rgba(255,79,106,.3)}
+.btn-blue{background:var(--blue);color:#fff}
+.stat-row{display:flex;gap:8px}
+.stat-box{flex:1;background:var(--muted);border-radius:8px;padding:10px 8px;text-align:center}
+.stat-box .val{font-family:var(--mono);font-size:20px}
+.beads{display:flex;flex-wrap:wrap;gap:4px;margin-top:10px}
+.bead{width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:9px;font-family:var(--mono);font-weight:600}
+.log-box{height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:3px;margin-top:8px}
+.log-row{display:flex;gap:8px;font-size:12px;font-family:var(--mono)}
+.log-time{color:var(--dim);white-space:nowrap;font-size:11px}
+.full{grid-column:1/-1}
+input,select{background:var(--muted);border:1px solid var(--border);border-radius:8px;padding:9px 12px;color:var(--text);font-size:13px;width:100%;font-family:var(--mono);outline:none;margin-bottom:8px}
+label{font-size:12px;color:var(--dim);display:block;margin-bottom:4px}
+.toggle{padding:4px 12px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;border:none}
+.tog-on{background:rgba(0,212,138,.2);color:var(--tai);border:1px solid rgba(0,212,138,.4)}
+.tog-off{background:var(--muted);color:var(--dim);border:1px solid var(--border)}
+.views>div{display:none}.views>div.show{display:block}
+.err{color:var(--xiu);font-size:13px;margin-top:4px}
+</style>
+</head>
+<body>
+<header>
+  <div style="display:flex;align-items:center">
+    <span class="logo">◈ AUTO<span>LC</span></span>
+    <span class="dot" id="wsDot" style="background:var(--xiu)"></span>
+    <span class="dim" id="wsLabel">Đang kết nối...</span>
+  </div>
+  <nav>
+    <button class="active" onclick="showView('dashboard',this)">📊 Dashboard</button>
+    <button onclick="showView('config',this)">⚙️ Cấu hình</button>
+    <button id="loginBtn" onclick="showView('login',this)" style="color:var(--tai)">🔐 Đăng nhập</button>
+  </nav>
+</header>
+<main>
+<div class="views">
+
+<!-- DASHBOARD -->
+<div id="v-dashboard" class="show">
+  <div class="grid">
+    <div class="card">
+      <div class="card-head">👤 Tài khoản</div>
+      <div class="row"><span class="dim">Nickname</span><span class="mono" id="d-nick">—</span></div>
+      <div class="row"><span class="dim">Số dư</span><span class="mono gold" id="d-bal" style="font-size:18px">—</span></div>
+      <div class="row"><span class="dim">Trạng thái</span><span id="d-conn">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head">🔮 Dự đoán AI</div>
+      <div class="pred-val" id="d-pred">—</div>
+      <div style="text-align:center;font-size:13px;color:var(--dim);margin-bottom:8px">Độ tin cậy <span class="gold mono" id="d-conf">—</span></div>
+      <div class="row"><span class="dim">Chế độ</span><span class="chip" id="d-regime">—</span></div>
+      <div class="row"><span class="dim">Tín hiệu</span><span class="mono" id="d-sig">—</span></div>
+    </div>
+    <div class="card">
+      <div class="card-head">🤖 Auto Cược</div>
+      <div class="row"><span class="dim">Trạng thái</span><span id="d-auto">○ Dừng</span></div>
+      <div class="row"><span class="dim">Mức cược</span><span class="mono" id="d-amount">—</span></div>
+      <div class="row"><span class="dim">Phiên</span><span class="mono" id="d-session">—</span></div>
+      <div class="row" id="d-x2row" style="display:none"><span class="dim">Gấp thếp</span><span class="mono" id="d-x2">—</span></div>
+      <button class="btn btn-green" id="autoBtn" onclick="toggleAuto()">▶ Bật Auto</button>
+    </div>
+    <div class="card">
+      <div class="card-head">📈 Thống kê</div>
+      <div class="stat-row">
+        <div class="stat-box"><div class="val tai" id="d-win">0</div><div class="dim">Thắng</div></div>
+        <div class="stat-box"><div class="val xiu" id="d-lose">0</div><div class="dim">Thua</div></div>
+        <div class="stat-box"><div class="val" id="d-pl" style="font-size:14px">0</div><div class="dim">P/L(đ)</div></div>
+      </div>
+      <div class="beads" id="d-beads"></div>
+    </div>
+    <div class="card full">
+      <div class="card-head">📋 Nhật ký</div>
+      <div class="log-box" id="logBox"></div>
+    </div>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div id="v-login" style="max-width:400px;margin:50px auto">
+  <div class="card">
+    <div class="card-head">🔐 Đăng nhập LC79</div>
+    <label>Tên đăng nhập</label>
+    <input id="i-user" placeholder="username"/>
+    <label>Mật khẩu</label>
+    <input id="i-pass" type="password" placeholder="••••••••"/>
+    <div class="err" id="loginErr"></div>
+    <button class="btn btn-blue" onclick="doLogin()">🔐 Đăng nhập</button>
+    <button class="btn" style="background:var(--muted);color:var(--dim);margin-top:6px" onclick="doLogout()">👋 Đăng xuất</button>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div id="v-config" style="max-width:440px;margin:50px auto">
+  <div class="card">
+    <div class="card-head">⚙️ Cấu hình Bot</div>
+    <label>Mức cược (đ)</label>
+    <input id="c-amount" type="number" value="1000"/>
+    <label>Stop-loss (%)</label>
+    <input id="c-stop" type="number" value="30"/>
+    <label>Cầu chốt</label>
+    <select id="c-side">
+      <option value="">🤖 AI tự chọn</option>
+      <option value="TAI">🟢 Luôn TÀI</option>
+      <option value="XIU">🔴 Luôn XỈU</option>
+    </select>
+    <div class="row" style="margin-bottom:8px">
+      <label style="margin:0">Gấp thếp X2</label>
+      <button class="toggle tog-off" id="togX2" onclick="toggleX2()">TẮT</button>
+    </div>
+    <div id="x2Extra" style="display:none">
+      <label>Giới hạn X2 (lần)</label>
+      <input id="c-x2max" type="number" value="5" min="1" max="10"/>
+    </div>
+    <button class="btn btn-blue" onclick="saveConfig()">💾 Lưu cấu hình</button>
+  </div>
+</div>
+
+</div>
+</main>
+<script>
+const LOG_C={info:'#4a9eff',pred:'#f0b429',result:'#d4dbe8',win:'#00d48a',lose:'#ff4f6a',bet:'#c084fc',warn:'#fb923c',error:'#ff4f6a'};
+let st=null,ws=null,x2On=false;
+
+function fmt(n){return Number(n||0).toLocaleString('vi-VN')}
+
+function showView(v,btn){
+  document.querySelectorAll('.views>div').forEach(d=>d.classList.remove('show'));
+  document.getElementById('v-'+v).classList.add('show');
+  document.querySelectorAll('nav button').forEach(b=>b.classList.remove('active'));
+  if(btn)btn.classList.add('active');
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host);
+  ws.onopen=()=>{document.getElementById('wsDot').style.background='var(--tai)';document.getElementById('wsLabel').textContent='Kết nối'};
+  ws.onclose=()=>{document.getElementById('wsDot').style.background='var(--xiu)';document.getElementById('wsLabel').textContent='Mất kết nối';setTimeout(connect,3000)};
+  ws.onmessage=(e)=>{
+    const msg=JSON.parse(e.data);
+    if(msg.type==='state'){st=msg.data;renderState()}
+    if(msg.type==='logs'){msg.data.forEach(l=>addLog(l,false))}
+    if(msg.type==='log'){addLog(msg.data,true)}
+  };
+}
+
+function renderState(){
+  if(!st)return;
+  document.getElementById('d-nick').textContent=st.nickname||'—';
+  document.getElementById('d-bal').textContent=fmt(st.balance)+'đ';
+  const conn=document.getElementById('d-conn');
+  conn.textContent=st.connected?'🟢 Đang kết nối':'🔴 Mất kết nối';
+  conn.style.color=st.connected?'var(--tai)':'var(--xiu)';
+  const pred=st.lastPred;
+  if(pred){
+    const pEl=document.getElementById('d-pred');
+    pEl.textContent=pred.pred;pEl.className='pred-val '+(pred.pred==='TAI'?'tai':'xiu');
+    document.getElementById('d-conf').textContent=pred.conf+'%';
+    document.getElementById('d-regime').textContent=pred.regime||'—';
+    document.getElementById('d-sig').textContent=pred.n_active+' tích cực';
+  }
+  const autoEl=document.getElementById('d-auto');
+  autoEl.textContent=st.autoRunning?'● ĐANG CHẠY':'○ Dừng';
+  autoEl.style.color=st.autoRunning?'var(--tai)':'var(--dim)';
+  document.getElementById('autoBtn').className='btn '+(st.autoRunning?'btn-red':'btn-green');
+  document.getElementById('autoBtn').textContent=st.autoRunning?'⏹ Dừng Auto':'▶ Bật Auto';
+  document.getElementById('d-amount').textContent=fmt(st.baseAmount)+'đ';
+  document.getElementById('d-session').textContent='#'+(st.sessionId||'—');
+  if(st.x2Enabled){document.getElementById('d-x2row').style.display='flex';document.getElementById('d-x2').textContent='Lv.'+st.x2Level+'/'+st.x2MaxLevel}
+  else{document.getElementById('d-x2row').style.display='none'}
+  document.getElementById('d-win').textContent=st.statWin;
+  document.getElementById('d-lose').textContent=st.statLose;
+  const pl=document.getElementById('d-pl');
+  pl.textContent=(st.statProfit>=0?'+':'')+fmt(st.statProfit);
+  pl.style.color=st.statProfit>=0?'var(--tai)':'var(--xiu)';
+  const beads=document.getElementById('d-beads');
+  beads.innerHTML=(st.recentHistory||[]).slice(-20).map(r=>{
+    const t=r==='TAI';
+    return '<div class="bead" style="background:'+(t?'rgba(0,212,138,.15)':'rgba(255,79,106,.15)')+';color:'+(t?'var(--tai)':'var(--xiu)')+';border:1px solid '+(t?'rgba(0,212,138,.3)':'rgba(255,79,106,.3)')+'">'+( t?'T':'X')+'</div>'
+  }).join('');
+}
+
+function addLog(l,prepend){
+  const box=document.getElementById('logBox');
+  const div=document.createElement('div');div.className='log-row';
+  div.innerHTML='<span class="log-time">'+l.time+'</span><span style="color:'+(LOG_C[l.type]||'var(--text)')+'">'+l.msg+'</span>';
+  if(prepend)box.insertBefore(div,box.firstChild); else box.appendChild(div);
+  if(box.children.length>200)box.lastChild.remove();
+}
+
+async function api(path,body){
+  const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return r.json();
+}
+
+async function doLogin(){
+  document.getElementById('loginErr').textContent='';
+  const u=document.getElementById('i-user').value,p=document.getElementById('i-pass').value;
+  if(!u||!p){document.getElementById('loginErr').textContent='Nhập đủ thông tin';return}
+  const cfg={baseAmount:+document.getElementById('c-amount').value,x2Enabled:x2On,x2MaxLevel:+document.getElementById('c-x2max').value,stopLossPercent:+document.getElementById('c-stop').value,algoEnabled:true,fixedSide:document.getElementById('c-side').value};
+  document.getElementById('loginErr').textContent='⏳ Đang đăng nhập...';
+  const res=await api('/api/login',{username:u,password:p,config:cfg});
+  if(res.error){document.getElementById('loginErr').textContent=res.error}
+  else{document.getElementById('loginErr').textContent='';showView('dashboard',document.querySelector('nav button'))}
+}
+
+async function doLogout(){await api('/api/logout',{});st=null}
+
+async function toggleAuto(){
+  if(!st)return;
+  await api(st.autoRunning?'/api/auto/stop':'/api/auto/start',{});
+}
+
+function toggleX2(){
+  x2On=!x2On;
+  const btn=document.getElementById('togX2');
+  btn.textContent=x2On?'BẬT':'TẮT';btn.className='toggle '+(x2On?'tog-on':'tog-off');
+  document.getElementById('x2Extra').style.display=x2On?'block':'none';
+}
+
+async function saveConfig(){
+  const cfg={baseAmount:+document.getElementById('c-amount').value,x2Enabled:x2On,x2MaxLevel:+document.getElementById('c-x2max').value,stopLossPercent:+document.getElementById('c-stop').value,algoEnabled:true,fixedSide:document.getElementById('c-side').value};
+  await api('/api/config',cfg);
+  showView('dashboard',document.querySelector('nav button'));
+}
+
+connect();
+</script>
+</body>
+</html>`);
+});
+
+server.listen(PORT, () => {
+  console.log(`🚀 AutoLC Web chạy tại port ${PORT}`);
+});
