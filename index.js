@@ -347,25 +347,36 @@ class Lc79Session {
       }
 
       // EIO ping "2" → pong "3"
-      if (m === '2') { this.ws.send('3'); return; }
+      if (m === '2' || m.startsWith('2')) { 
+        try { this.ws.send('3'); } catch(e) {}
+        return; 
+      }
 
-      // Namespace connect confirm "40/txmd5" → log ok
-      if (m.startsWith('40/txmd5')) {
-        if (!this._wsConnected) {
-          addLog('info', '✅ Đã kết nối LC79');
-        }
+      // Namespace connect confirm
+      if (m.startsWith('40')) {
+        if (!this._wsConnected) addLog('info', '✅ Đã kết nối LC79');
         this._wsConnected = true;
         broadcastState();
         return;
       }
 
-      // Socket.IO event "42/txmd5,[...]"
-      if (!m.startsWith('42/txmd5,')) return;
+      // Socket.IO events — hỗ trợ cả có và không có namespace prefix
+      if (!m.startsWith('42')) return;
       try {
-        const jsonPart = m.slice('42/txmd5,'.length);
+        // "42/txmd5,[...]" hoặc "42[...]"
+        let jsonPart = m.slice(2); // bỏ "42"
+        if (jsonPart.startsWith('/txmd5,')) jsonPart = jsonPart.slice('/txmd5,'.length);
+        else if (jsonPart.startsWith('/')) {
+          // namespace khác — bỏ qua
+          const commaIdx = jsonPart.indexOf(',');
+          if (commaIdx < 0) return;
+          jsonPart = jsonPart.slice(commaIdx + 1);
+        }
         const arr = JSON.parse(jsonPart);
-        if (!Array.isArray(arr) || arr.length < 2) return;
-        this._handleEvent(arr[0], typeof arr[1] === 'object' ? arr[1] : {});
+        if (!Array.isArray(arr) || arr.length < 1) return;
+        const eventName = arr[0];
+        const eventData = arr.length > 1 ? (typeof arr[1] === 'object' ? arr[1] : {}) : {};
+        this._handleEvent(eventName, eventData);
       } catch(e) {}
     });
     this.ws.on('close', () => {
@@ -379,13 +390,13 @@ class Lc79Session {
         broadcastState();
         return;
       }
-      const wasAuto = this.autoRunning; // giữ trạng thái auto
-      // WS đứt — tự reconnect, không log
+      const wasAuto = this.autoRunning;
+      this._reconnectCount = (this._reconnectCount || 0) + 1;
+      addLog('warn', `🔄 Mất kết nối (lần ${this._reconnectCount}) — thử lại sau 5s`);
       broadcastState();
       this._reconnectTimer = setTimeout(() => {
         if (this.running) {
-          // reconnect...
-          this.autoRunning = wasAuto; // khôi phục auto sau reconnect
+          this.autoRunning = wasAuto;
           this.connect();
         }
       }, 5000);
