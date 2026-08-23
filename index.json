@@ -335,6 +335,9 @@ class Lc79Session {
             this.ws.send('42/txmd5,["join-room",null]');
             this.ws.send('42/txmd5,["get-current-session",null]');
             this.ws.send('42/txmd5,["get-his-bet",null]');
+            if (this.autoRunning) {
+              addLog('info', '🤖 Auto vẫn đang bật — tiếp tục theo dõi phiên');
+            }
           }
         }, 1000);
         // Bật ping interval
@@ -375,11 +378,13 @@ class Lc79Session {
         broadcastState();
         return;
       }
+      const wasAuto = this.autoRunning; // giữ trạng thái auto
       addLog('warn', '🔌 WebSocket đứt — tự kết nối lại sau 5 giây...');
       broadcastState();
       this._reconnectTimer = setTimeout(() => {
         if (this.running) {
           addLog('info', '🔄 Đang kết nối lại...');
+          this.autoRunning = wasAuto; // khôi phục auto sau reconnect
           this.connect();
         }
       }, 5000);
