@@ -414,10 +414,31 @@ class Lc79Session {
       if (tickId) this.sessionId = tickId;
       // Chỉ bet khi state OPEN và chưa bet phiên này
       if (state === 'PREPARE_TO_START') {
-        // Reset khi phiên mới chuẩn bị
         if (tickId && tickId !== this._lastOpenSessionId) {
+          // Xử lý kết quả phiên vừa xong trước khi reset
+          if (this._pendingResultCheck) {
+            const { placed, betAmount } = this._pendingResultCheck;
+            this._pendingResultCheck = null;
+            if (placed && !this._wonThisSession) {
+              // THUA — won-session không đến
+              this.statLose++;
+              this.statProfit -= betAmount;
+              const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
+              addLog('lose', `❌ THUA | -${betAmount.toLocaleString()}đ | P/L: ${plStr}đ`);
+              if (this.autoRunning && this.x2Enabled) {
+                this.lastLossAmount = betAmount;
+                this.x2Pending = true;
+              } else {
+                this.currentAmount = this.baseAmount;
+                this.x2Level = 0;
+                this.x2Pending = false;
+              }
+            }
+            this._wonThisSession = false;
+            this.sessionPlaced = false;
+          }
+          // Reset cho phiên mới
           this._lastOpenSessionId = tickId;
-          this.sessionPlaced = false;
           this._lastBetSessionId = null;
           this.bettingOpen = false;
           const pred = predictNext(globalHistory);
@@ -524,31 +545,11 @@ class Lc79Session {
       const total = dices.reduce((s,d) => s+d, 0);
       addLog('result', `🎲 Phiên #${this.sessionId} | ${dices.join('-')} (${total}) → ${result || '?'}`);
 
-      // Chờ 800ms để won-session có cơ hội chạy trước (won-session đến sau session-result)
-      const _sid = this.sessionId;
-      const _placed = this.sessionPlaced;
-      setTimeout(() => {
-        if (!_placed) return;
-        if (!this._wonThisSession) {
-          // Không có won-session = THUA
-          const lostAmt = this.lastBetAmount || this.baseAmount;
-          this.statLose++;
-          this.statProfit -= lostAmt;
-          const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
-          addLog('lose', `❌ THUA | -${lostAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
-          if (this.autoRunning && this.x2Enabled) {
-            this.lastLossAmount = lostAmt;
-            this.x2Pending = true;
-          } else {
-            this.currentAmount = this.baseAmount;
-            this.x2Level = 0;
-            this.x2Pending = false;
-          }
-          broadcastState();
-        }
-        this._wonThisSession = false;
-        this.sessionPlaced = false;
-      }, 800);
+      // Đánh dấu cần check kết quả — sẽ xử lý khi phiên tiếp theo bắt đầu
+      this._pendingResultCheck = {
+        placed: this.sessionPlaced,
+        betAmount: this.lastBetAmount || this.baseAmount
+      };
       broadcastState();
     }
 
@@ -571,7 +572,7 @@ class Lc79Session {
       if (won) { this.statWin++; this.statProfit += profit; }
 
       const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
-      addLog(won ? 'win' : 'lose', `${won ? '✅ THẮNG' : '❌ THUA'} | ${won ? '+' : '-'}${profitAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
+      if (won) addLog('win', `✅ THẮNG | +${profit.toLocaleString()}đ | P/L: ${plStr}đ`);
 
       // X2 martingale
       if (this.autoRunning && this.x2Enabled) {
