@@ -405,6 +405,11 @@ class Lc79Session {
 
   _handleEvent(event, data) {
     if (['tick-update','summary-winner','ping','pong','heartbeat','undefined'].includes(event)) return;
+    // Debug: log tất cả event
+    if (!['your-info','session-info','new-session','open-bet','bet-open','start-session',
+          'session-result','result','game-result','end-session','won-session','bet'].includes(event)) {
+      addLog('info', `📡 event: ${event}`);
+    }
 
     if (event === 'your-info') {
       this._wsConnected = true;
