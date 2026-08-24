@@ -404,7 +404,12 @@ class Lc79Session {
   }
 
   _handleEvent(event, data) {
-    if (['tick-update','summary-winner','ping','pong','heartbeat','undefined'].includes(event)) return;
+    if (['ping','pong','heartbeat','undefined'].includes(event)) return;
+    // Log tick và summary để debug timing
+    if (['tick-update','summary-winner'].includes(event)) {
+      addLog('info', `⏱ ${event}: ${JSON.stringify(data).slice(0,60)}`);
+      return;
+    }
 
     // Handle exception từ server
     if (event === 'exception') {
