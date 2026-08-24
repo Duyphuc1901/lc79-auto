@@ -405,10 +405,19 @@ class Lc79Session {
 
   _handleEvent(event, data) {
     if (['tick-update','summary-winner','ping','pong','heartbeat','undefined'].includes(event)) return;
-    // Debug: log tất cả event
+
+    // Handle exception từ server
+    if (event === 'exception') {
+      const msg = data.message || data.msg || JSON.stringify(data);
+      addLog('error', `⚠️ Server exception: ${msg}`);
+      return;
+    }
+
+    // Debug unknown events
     if (!['your-info','session-info','new-session','open-bet','bet-open','start-session',
+          'your-current-session-info','current-session','session',
           'session-result','result','game-result','end-session','won-session','bet'].includes(event)) {
-      addLog('info', `📡 event: ${event}`);
+      addLog('info', `📡 event: ${event} | ${JSON.stringify(data).slice(0,80)}`);
     }
 
     if (event === 'your-info') {
@@ -418,7 +427,8 @@ class Lc79Session {
       broadcastState();
     }
 
-    else if (['session-info','new-session','open-bet','bet-open','start-session'].includes(event)) {
+    else if (['session-info','new-session','open-bet','bet-open','start-session',
+                'your-current-session-info','current-session','session'].includes(event)) {
       const incomingId = data.id;
       const isNewSession = incomingId && incomingId !== this._lastOpenSessionId;
 
