@@ -533,17 +533,18 @@ class Lc79Session {
       const prize = data.prize ?? 0;
       if (data.balance) this.balance = data.balance;
 
-      // Lấy từ bets array (chính xác nhất)
       const myBet = Array.isArray(data.bets) && data.bets.length > 0 ? data.bets[0] : null;
       const betAmount = myBet ? (myBet.amount || 0) : (this.lastBetAmount || this.baseAmount);
-      const betWon = myBet ? (myBet.won || 0) : 0;
 
-      // won-session chỉ gửi khi t có đặt cược — prize > 0 là thắng, <= 0 là thua
+      // prize > 0 thắng, prize = 0 thua (server không gửi số âm)
       const won = prize > 0;
-      const profitAmt = won ? prize : betAmount; // lời bao nhiêu / mất bao nhiêu
+      const profitAmt = won ? prize : betAmount;
 
-      if (won) { this.statWin++; this.statProfit += prize; }
-      else { this.statLose++; this.statProfit -= betAmount; }
+      // Chỉ tính stats nếu có đặt cược phiên này
+      if (betAmount > 0) {
+        if (won) { this.statWin++; this.statProfit += prize; }
+        else { this.statLose++; this.statProfit -= betAmount; }
+      }
 
       const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
       addLog(won ? 'win' : 'lose', `${won ? '✅ THẮNG' : '❌ THUA'} | ${won ? '+' : '-'}${profitAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
@@ -568,25 +569,20 @@ class Lc79Session {
       broadcastState();
     }
 
-    else if (event === 'bet') {
+    else if (event === 'bet' || event === 'bet-result') {
       if (this.betTimer) { clearTimeout(this.betTimer); this.betTimer = null; }
       this.betPending = false;
-      if (data.type && data.amount != null) {
-        // Bet được chấp nhận
+      const amount = data.amount || data.betAmount || 0;
+      const type = data.type || data.betType || '';
+      const postBal = data.postBalance || data.balance || 0;
+      if (type && amount > 0) {
         this.sessionPlaced = true;
-        if (data.postBalance != null) this.balance = data.postBalance;
-        addLog('bet', `✅ Xác nhận: ${data.type} | ${(data.amount||0).toLocaleString()}đ`);
+        if (postBal) this.balance = postBal;
+        addLog('bet', `✅ Xác nhận: ${type} | ${amount.toLocaleString()}đ`);
         broadcastState();
-        // Cập nhật balance
-        setTimeout(() => {
-          if (this.ws && this.ws.readyState === 1) {
-            this.ws.send('42/txmd5,["get-current-my-info",null]');
-          }
-        }, 500);
       } else {
-        // Bet bị từ chối
         this.sessionPlaced = false;
-        addLog('error', '❌ Nhà cái từ chối lệnh cược — kiểm tra số dư hoặc thời gian đặt');
+        addLog('error', '❌ Nhà cái từ chối lệnh cược');
         if (this.autoRunning) { this.autoRunning = false; addLog('warn', '⏹ Dừng auto'); }
         broadcastState();
       }
