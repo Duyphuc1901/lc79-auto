@@ -19,7 +19,7 @@ let session = null;             // active bot session
 let logs = [];                  // activity log
 
 function addLog(type, msg) {
-  const entry = { time: new Date().toLocaleTimeString('vi-VN'), type, msg };
+  const entry = { time: new Date().toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'}), type, msg };
   logs.unshift(entry);
   if (logs.length > 200) logs.pop();
   broadcast({ type: 'log', data: entry });
@@ -566,7 +566,7 @@ class Lc79Session {
           }
           this._wonThisSession = false;
           this.sessionPlaced = false;
-        }, 8000);
+        }, 10000);
       }
       broadcastState();
     }
@@ -658,7 +658,7 @@ class Lc79Session {
       this.betTimer = setTimeout(() => {
         this.betPending = false;
         this.sessionPlaced = true;
-      }, 8000);
+      }, 10000);
       addLog('bet', `🎯 ${side} | ${amount.toLocaleString()}đ`);
     } catch(e) {
       addLog('error', `❌ Lỗi gửi lệnh: ${e.message}`);
