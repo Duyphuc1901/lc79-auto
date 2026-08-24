@@ -413,26 +413,51 @@ class Lc79Session {
       // Cập nhật sessionId từ tick
       if (tickId) this.sessionId = tickId;
       // Chỉ bet khi state OPEN và chưa bet phiên này
-      addLog('info', `⏱ tick state=${state} tick=${data.tick} id=${tickId}`);
-      if ((state === 'OPEN' || state === 'BETTING' || state === 'BET_OPEN') 
-          && this.autoRunning && !this.sessionPlaced && !this.betPending
-          && tickId && tickId !== this._lastBetSessionId) {
-        this.bettingOpen = true;
-        this._lastBetSessionId = tickId;
-        const side = this.fixedSide || (this.lastPred ? this.lastPred.pred : 'TAI');
-        this._placeBet(side, this.currentAmount);
+      if (state === 'PREPARE_TO_START') {
+        // Reset khi phiên mới chuẩn bị
+        if (tickId && tickId !== this._lastOpenSessionId) {
+          this._lastOpenSessionId = tickId;
+          this.sessionPlaced = false;
+          this._lastBetSessionId = null;
+          this.bettingOpen = false;
+          const pred = predictNext(globalHistory);
+          this.lastPred = pred;
+          addLog('pred', `🔮 Phiên #${tickId} | AI: ${pred.pred} (${pred.conf}%) | ${pred.n_active} tín hiệu`);
+          broadcastState();
+        }
+        return;
       }
-      // Khi PREPARE_TO_START = phiên mới sắp bắt đầu, reset sessionPlaced
-      if (state === 'PREPARE_TO_START' && tickId && tickId !== this._lastOpenSessionId) {
-        this._lastOpenSessionId = tickId;
-        this.sessionPlaced = false;
-        this._lastBetSessionId = null;
-        this.bettingOpen = false;
-        // Dự đoán trước khi phiên mở
-        const pred = predictNext(globalHistory);
-        this.lastPred = pred;
-        addLog('pred', `🔮 Phiên #${tickId} | AI: ${pred.pred} (${pred.conf}%) | ${pred.n_active} tín hiệu`);
-        broadcastState();
+
+      if (state === 'BETTING' || state === 'OPEN' || state === 'BET_OPEN') {
+        this.bettingOpen = true;
+        // Bet ngay khi vào BETTING lần đầu của phiên này
+        if (this.autoRunning && !this.sessionPlaced && !this.betPending
+            && tickId && tickId !== this._lastBetSessionId) {
+          this._lastBetSessionId = tickId;
+          // X2 logic
+          if (this.x2Enabled && this.x2Pending) {
+            const newAmt = (this.lastLossAmount || this.currentAmount) * 2;
+            if (this.x2Level >= this.x2MaxLevel) {
+              addLog('warn', `❌ Đạt giới hạn x2. Dừng auto.`);
+              this.autoRunning = false; broadcastState(); return;
+            }
+            if (newAmt > this.balance) {
+              this.currentAmount = this.baseAmount; this.x2Level = 0; this.x2Pending = false;
+            } else {
+              this.x2Level++; this.x2Pending = false; this.currentAmount = newAmt;
+            }
+          } else {
+            this.currentAmount = this.baseAmount;
+          }
+          // Stop loss
+          if (this.statProfit < 0 && Math.abs(this.statProfit) > this.balance * this.stopLossPercent) {
+            addLog('warn', `⚠️ Stop-loss. Dừng auto.`);
+            this.autoRunning = false; broadcastState(); return;
+          }
+          const side = this.fixedSide || (this.lastPred ? this.lastPred.pred : 'TAI');
+          this._placeBet(side, this.currentAmount);
+        }
+        return;
       }
       return;
     }
