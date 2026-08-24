@@ -413,6 +413,7 @@ class Lc79Session {
       // Cập nhật sessionId từ tick
       if (tickId) this.sessionId = tickId;
       // Chỉ bet khi state OPEN và chưa bet phiên này
+      addLog('info', `⏱ tick state=${state} tick=${data.tick} id=${tickId}`);
       if ((state === 'OPEN' || state === 'BETTING' || state === 'BET_OPEN') 
           && this.autoRunning && !this.sessionPlaced && !this.betPending
           && tickId && tickId !== this._lastBetSessionId) {
@@ -485,37 +486,7 @@ class Lc79Session {
       }
       broadcastState();
 
-      // Auto bet — chỉ đặt nếu phiên mới và chưa đặt
-      if (this.autoRunning && this.baseAmount > 0 && !this.sessionPlaced && isNewSession) {
-        if (this.statProfit < 0 && Math.abs(this.statProfit) > this.balance * this.stopLossPercent) {
-          addLog('warn', `⚠️ Stop-loss kích hoạt. Dừng auto.`);
-          this.autoRunning = false;
-          broadcastState();
-          return;
-        }
-        if (this.x2Enabled && this.x2Pending) {
-          const newAmt = (this.lastLossAmount || this.currentAmount) * 2;
-          if (this.x2Level >= this.x2MaxLevel) {
-            addLog('warn', `❌ Đạt giới hạn x2 (${this.x2MaxLevel} lần). Dừng auto.`);
-            this.autoRunning = false;
-            broadcastState();
-            return;
-          }
-          if (newAmt > this.balance) {
-            this.currentAmount = this.baseAmount;
-            this.x2Level = 0;
-            this.x2Pending = false;
-          } else {
-            this.x2Level++;
-            this.x2Pending = false;
-            this.currentAmount = newAmt;
-          }
-        } else {
-          this.currentAmount = this.baseAmount;
-        }
-        const side = this.fixedSide || pred.pred;
-        this._placeBet(side, this.currentAmount);
-      }
+      // KHÔNG bet ở đây — chờ tick-update state=OPEN mới bet
     }
 
     else if (['session-result','result','game-result','end-session'].includes(event)) {
