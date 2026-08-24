@@ -427,8 +427,13 @@ class Lc79Session {
       broadcastState();
     }
 
-    else if (['session-info','new-session','open-bet','bet-open','start-session',
-                'your-current-session-info','current-session','session'].includes(event)) {
+    // your-current-session-info: chỉ lấy trạng thái hiện tại, KHÔNG bet (có thể đã hết giờ)
+    else if (['your-current-session-info','current-session'].includes(event)) {
+      this.sessionId = data.id;
+      broadcastState();
+    }
+
+    else if (['session-info','new-session','open-bet','bet-open','start-session'].includes(event)) {
       const incomingId = data.id;
       const isNewSession = incomingId && incomingId !== this._lastOpenSessionId;
 
