@@ -548,8 +548,9 @@ class Lc79Session {
       // Đánh dấu cần check kết quả — sẽ xử lý khi phiên tiếp theo bắt đầu
       this._pendingResultCheck = {
         placed: this.sessionPlaced,
-        betAmount: this.lastBetAmount || this.baseAmount
+        betAmount: this.lastBetAmount || this.currentAmount || this.baseAmount
       };
+      addLog('info', `📋 pending check: placed=${this.sessionPlaced} amt=${this.lastBetAmount||this.currentAmount||this.baseAmount}`);
       broadcastState();
     }
 
