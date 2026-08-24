@@ -339,12 +339,7 @@ class Lc79Session {
             }
           }
         }, 1000);
-        // Chỉ gửi EIO ping "2" — không gửi bất cứ thứ gì khác
-        this.pingInterval = setInterval(() => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            try { this.ws.send('2'); } catch(e) {}
-          }
-        }, 25000);
+        // Không tự ping — server lc79 tự gửi ping, ta chỉ pong lại
         return;
       }
 
@@ -382,7 +377,7 @@ class Lc79Session {
       } catch(e) {}
     });
     this.ws.on('close', (code, reason) => {
-      clearInterval(this.pingInterval);
+      if (this.pingInterval) { clearInterval(this.pingInterval); this.pingInterval = null; }
       this._wsConnected = false;
       this.bettingOpen = false;
       this.betPending = false;
