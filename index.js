@@ -404,10 +404,35 @@ class Lc79Session {
   }
 
   _handleEvent(event, data) {
-    if (['ping','pong','heartbeat','undefined'].includes(event)) return;
-    // Log tick và summary để debug timing
-    if (['tick-update','summary-winner'].includes(event)) {
-      addLog('info', `⏱ ${event}: ${JSON.stringify(data).slice(0,60)}`);
+    if (['ping','pong','heartbeat','undefined','summary-winner'].includes(event)) return;
+
+    // tick-update: theo dõi state để bet đúng lúc
+    if (event === 'tick-update') {
+      const state = data.state || '';
+      const tickId = data.id;
+      // Cập nhật sessionId từ tick
+      if (tickId) this.sessionId = tickId;
+      // Chỉ bet khi state OPEN và chưa bet phiên này
+      if ((state === 'OPEN' || state === 'BETTING' || state === 'BET_OPEN') 
+          && this.autoRunning && !this.sessionPlaced && !this.betPending
+          && tickId && tickId !== this._lastBetSessionId) {
+        this.bettingOpen = true;
+        this._lastBetSessionId = tickId;
+        const side = this.fixedSide || (this.lastPred ? this.lastPred.pred : 'TAI');
+        this._placeBet(side, this.currentAmount);
+      }
+      // Khi PREPARE_TO_START = phiên mới sắp bắt đầu, reset sessionPlaced
+      if (state === 'PREPARE_TO_START' && tickId && tickId !== this._lastOpenSessionId) {
+        this._lastOpenSessionId = tickId;
+        this.sessionPlaced = false;
+        this._lastBetSessionId = null;
+        this.bettingOpen = false;
+        // Dự đoán trước khi phiên mở
+        const pred = predictNext(globalHistory);
+        this.lastPred = pred;
+        addLog('pred', `🔮 Phiên #${tickId} | AI: ${pred.pred} (${pred.conf}%) | ${pred.n_active} tín hiệu`);
+        broadcastState();
+      }
       return;
     }
 
