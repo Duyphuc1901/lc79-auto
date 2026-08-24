@@ -18,6 +18,31 @@ let globalHistory = [];         // ["TAI","XIU",...]
 let session = null;             // active bot session
 let logs = [];                  // activity log
 
+const SESSIONS_API = 'https://wtxmd52.tele68.com/v1/txmd5/sessions';
+
+async function fetchAndSeedHistory() {
+  try {
+    const r = await axios.get(SESSIONS_API, { timeout: 8000 });
+    const list = r.data.list || [];
+    // API trả từ mới → cũ, cần đảo lại
+    const newHistory = list.reverse().map(s => s.resultTruyenThong).filter(v => v === 'TAI' || v === 'XIU');
+    if (newHistory.length > 0) {
+      // Merge: giữ history từ WS (mới hơn), prepend API history (cũ hơn)
+      // Lấy sessionId mới nhất từ API để tránh duplicate
+      const latestApiId = list[list.length - 1]?.id || 0;
+      globalHistory = newHistory;
+      console.log(`[📊] Seed ${newHistory.length} phiên từ API (phiên mới nhất: #${latestApiId})`);
+    }
+  } catch(e) {
+    console.error('[❌] Fetch history API lỗi:', e.message);
+  }
+}
+
+// Fetch history ngay khi khởi động
+fetchAndSeedHistory();
+// Fetch lại mỗi 5 phút để cập nhật
+setInterval(fetchAndSeedHistory, 5 * 60 * 1000);
+
 function addLog(type, msg) {
   const entry = { time: new Date().toLocaleTimeString('vi-VN', {timeZone:'Asia/Ho_Chi_Minh'}), type, msg };
   logs.unshift(entry);
@@ -1293,41 +1318,51 @@ async function api(path,body){
 async function loadRanking(){
   const list=document.getElementById('rankList');
   const status=document.getElementById('rankStatus');
-  list.innerHTML='<div class="rank-loading">Đang phân tích...</div>';
+  list.innerHTML='';
+
+  // Luôn hiện combo strategies trước
+  const combos=[
+    {tag:'auto',label:'🧠 Tự động (tất cả thuật toán)'},
+    {tag:'trend',label:'📈 Theo cầu'},
+    {tag:'reverse',label:'🔄 Bắt cầu gãy'},
+    {tag:'cycle',label:'🔁 Chu kỳ'},
+    {tag:'recent',label:'⚡ Ngắn hạn'},
+  ];
+  combos.forEach(({tag,label})=>{
+    const div=document.createElement('div');
+    div.className='rank-item'+(selectedStrategy===tag?' selected':'');
+    div.innerHTML='<span class="rank-name">'+label+'</span><span></span>';
+    div.onclick=function(){selectStrategy(tag,div)};
+    list.appendChild(div);
+  });
+
+  // Separator
+  const sep=document.createElement('div');
+  sep.style='font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;font-family:var(--mono)';
+  sep.textContent='— Thuật toán đơn lẻ';
+  list.appendChild(sep);
+
+  // Thử load backtest
   try{
+    status.textContent='Đang phân tích...';
     const ranks=await fetch('/api/rank').then(r=>r.json());
-    if(!ranks.length){list.innerHTML='<div class="rank-loading">Cần ít nhất 50 phiên dữ liệu</div>';status.textContent='';return;}
-    status.textContent='Phân tích '+ranks.length+' thuật toán | '+ranks[0].total+' phiên gần nhất';
+    if(!ranks.length){
+      status.textContent='Chưa đủ dữ liệu — sẽ cập nhật sau vài phiên';
+      // Hiện danh sách thuật toán không có tỉ lệ
+      const allTags=['WM1','WM2','WM3','SF','SB3','SB5','SB7','P3','P4','P5','B10','B20','ZPG','MDK','ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
+      allTags.forEach(tag=>{
+        const div=document.createElement('div');
+        div.className='rank-item'+(selectedStrategy===tag?' selected':'');
+        div.innerHTML='<span class="rank-name">'+(ALGO_NAMES[tag]||tag)+'</span><span class="rank-acc" style="color:var(--t3)">—</span>';
+        div.onclick=function(){selectStrategy(tag,div)};
+        list.appendChild(div);
+      });
+      return;
+    }
+    status.textContent='Phân tích '+ranks.length+' thuật toán | '+ranks[0].total+' phiên';
     const best=ranks[0];
-
-    // Thêm options combo trước
-    const combos=[
-      {tag:'auto',label:'🧠 Tự động (tất cả thuật toán)',acc:null},
-      {tag:'trend',label:'📈 Theo cầu',acc:null},
-      {tag:'reverse',label:'🔄 Bắt cầu gãy',acc:null},
-      {tag:'cycle',label:'🔁 Chu kỳ',acc:null},
-      {tag:'recent',label:'⚡ Ngắn hạn',acc:null},
-    ];
-
-    list.innerHTML='';
-
-    // Render combo strategies
-    combos.forEach(({tag,label})=>{
-      const div=document.createElement('div');
-      div.className='rank-item'+(selectedStrategy===tag?' selected':'');
-      div.innerHTML='<span class="rank-name">'+label+'</span><span></span>';
-      div.onclick=()=>selectStrategy(tag);
-      list.appendChild(div);
-    });
-
-    // Separator
-    const sep=document.createElement('div');
-    sep.style='font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;font-family:var(--mono)';
     sep.textContent='— Thuật toán đơn lẻ (backtest '+ranks[0].total+' phiên)';
-    list.appendChild(sep);
-
-    // Render từng thuật toán với tỉ lệ thắng
-    ranks.forEach(({tag,acc,total},i)=>{
+    ranks.forEach(({tag,acc})=>{
       const pct=Math.round(acc*100);
       const isBest=tag===best.tag;
       const isGood=pct>=54;
@@ -1339,17 +1374,16 @@ async function loadRanking(){
          isGood?'<span class="rank-badge badge-good">👍 Tốt</span>':'')+
         '</span>'+
         '<span class="rank-acc" style="color:'+(pct>=55?'var(--tai)':pct>=52?'var(--gold)':'var(--t2)')+'">'+pct+'%</span>';
-      div.onclick=()=>selectStrategy(tag);
+      div.onclick=function(){selectStrategy(tag,div)};
       list.appendChild(div);
     });
-  }catch(e){list.innerHTML='<div class="rank-loading">Lỗi phân tích</div>';}
+  }catch(e){status.textContent='Lỗi tải dữ liệu';}
 }
 
-function selectStrategy(tag){
+function selectStrategy(tag,el){
   selectedStrategy=tag;
-  document.querySelectorAll('.rank-item').forEach(el=>el.classList.remove('selected'));
-  event.currentTarget.classList.add('selected');
-  // Áp dụng ngay
+  document.querySelectorAll('.rank-item').forEach(e=>e.classList.remove('selected'));
+  if(el)el.classList.add('selected');
   api('/api/config',{strategy:tag});
 }
 
