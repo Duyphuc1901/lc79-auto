@@ -434,7 +434,6 @@ class Lc79Session {
                 this.x2Pending = false;
               }
             }
-            this._wonThisSession = false;
             this.sessionPlaced = false;
           }
           // Reset cho phiên mới
@@ -548,8 +547,11 @@ class Lc79Session {
       // Chờ 3 giây — đủ thời gian cho won-session đến nếu thắng
       if (this.sessionPlaced) {
         const _betAmt = this.lastBetAmount || this.currentAmount || this.baseAmount;
+        const _checkSid = this.sessionId; // snapshot sessionId
         this._loseCheckTimer = setTimeout(() => {
-          if (!this._wonThisSession) {
+          // Chỉ log thua nếu session này chưa thắng
+          if (!this._wonSessions) this._wonSessions = new Set();
+          if (!this._wonSessions.has(_checkSid)) {
             this.statLose++;
             this.statProfit -= _betAmt;
             const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
@@ -564,14 +566,17 @@ class Lc79Session {
             }
             broadcastState();
           }
-          this._wonThisSession = false;
-          this.sessionPlaced = false;
+          // Cleanup
+          if (this._wonSessions) this._wonSessions.delete(_checkSid);
         }, 10000);
       }
       broadcastState();
     }
 
     else if (event === 'won-session') {
+      // Đánh dấu session này đã thắng
+      if (!this._wonSessions) this._wonSessions = new Set();
+      this._wonSessions.add(data.id || this.sessionId);
       this._wonThisSession = true;
       if (this._loseCheckTimer) { clearTimeout(this._loseCheckTimer); this._loseCheckTimer = null; }
       // Format: {id, dices, bets:[{won, type, amount}], prize, balance}
