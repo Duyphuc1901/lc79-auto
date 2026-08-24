@@ -162,6 +162,104 @@ function sigMomentumDecay(sub) {
   return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
 }
 
+// ── THUẬT TOÁN MỚI ─────────────────────────────────────────────────────────
+
+// Entropy: chuỗi càng hỗn loạn → theo zigzag, càng đều → theo cầu
+function sigEntropy(sub) {
+  if (sub.length < 15) return null;
+  const w = sub.slice(-15);
+  let sw = 0;
+  for (let i = 1; i < w.length; i++) if (w[i] !== w[i-1]) sw++;
+  const sr = sw / 14;
+  if (sr > 0.70) return w[w.length-1] === 'TAI' ? 'XIU' : 'TAI'; // zigzag
+  if (sr < 0.35) return w[w.length-1]; // bệt → theo cầu
+  return null;
+}
+
+// Weighted Recent: ưu tiên 10 phiên gần nhất hơn toàn bộ lịch sử
+function sigWeightedRecent(sub) {
+  if (sub.length < 15) return null;
+  const recent = sub.slice(-10);
+  const old10 = sub.slice(-30, -10);
+  const rT = recent.filter(v => v === 'TAI').length / recent.length;
+  const oT = old10.length ? old10.filter(v => v === 'TAI').length / old10.length : 0.5;
+  const weighted = rT * 0.7 + oT * 0.3;
+  if (weighted > 0.60) return 'TAI';
+  if (weighted < 0.40) return 'XIU';
+  return null;
+}
+
+// Double pattern: tìm pattern 2 phiên liên tiếp lặp lại
+function sigDoublePattern(sub) {
+  if (sub.length < 20) return null;
+  const last2 = sub.slice(-2).join(',');
+  let tai = 0, xiu = 0;
+  for (let i = 0; i < sub.length - 3; i++) {
+    if (sub.slice(i, i+2).join(',') === last2) {
+      if (sub[i+2] === 'TAI') tai++; else xiu++;
+    }
+  }
+  const total = tai + xiu;
+  if (total < 4) return null;
+  if (tai/total > 0.65) return 'TAI';
+  if (xiu/total > 0.65) return 'XIU';
+  return null;
+}
+
+// Mean reversion: nếu lệch quá nhiều so với 50/50 thì kéo về
+function sigMeanReversion(sub) {
+  if (sub.length < 30) return null;
+  const w = sub.slice(-30);
+  const taiCount = w.filter(v => v === 'TAI').length;
+  if (taiCount >= 22) return 'XIU'; // quá nhiều TAI → kéo về XIU
+  if (taiCount <= 8)  return 'TAI'; // quá nhiều XIU → kéo về TAI
+  return null;
+}
+
+// Consecutive alternating: chuỗi 1-1-1 dài → break
+function sigAltBreak(sub) {
+  if (sub.length < 8) return null;
+  let altLen = 1;
+  for (let i = sub.length-2; i >= 0; i--) {
+    if (sub[i] !== sub[i+1]) altLen++;
+    else break;
+  }
+  if (altLen >= 6) return sub[sub.length-1]; // break zigzag dài → follow
+  return null;
+}
+
+// Volume-weighted bias: 5 phiên gần nhất có weight cao hơn
+function sigVWBias(sub) {
+  if (sub.length < 20) return null;
+  const weights = [5,4,3,2,1];
+  let wTai = 0, wTotal = 0;
+  const recent5 = sub.slice(-5);
+  recent5.forEach((v, i) => {
+    wTai += (v === 'TAI' ? 1 : 0) * weights[i];
+    wTotal += weights[i];
+  });
+  const p = wTai / wTotal;
+  if (p >= 0.70) return 'TAI';
+  if (p <= 0.30) return 'XIU';
+  return null;
+}
+
+// Cycle detector: tìm chu kỳ lặp lại (4,6,8 phiên)
+function sigCycle(period) {
+  return (sub) => {
+    if (sub.length < period * 3) return null;
+    let matches = 0, total = 0;
+    for (let i = sub.length - period - 1; i >= period; i -= period) {
+      if (sub[i] === sub[i - period]) matches++;
+      total++;
+      if (total >= 3) break;
+    }
+    if (total < 2 || matches/total < 0.70) return null;
+    const predicted = sub[sub.length - period];
+    return predicted;
+  };
+}
+
 const SIGNALS = [
   ['WM1', sigWeightedMarkov(1), 2.0],
   ['WM2', sigWeightedMarkov(2), 2.5],
@@ -177,6 +275,16 @@ const SIGNALS = [
   ['B20', sigBias(20),           1.2],
   ['ZPG', sigZigzagPersist,      2.0],
   ['MDK', sigMomentumDecay,      2.2],
+  // Thuật toán mới
+  ['ENT', sigEntropy,             2.0],
+  ['WRE', sigWeightedRecent,      1.8],
+  ['DP2', sigDoublePattern,       2.2],
+  ['MVR', sigMeanReversion,       1.5],
+  ['ALB', sigAltBreak,            1.8],
+  ['VWB', sigVWBias,              1.6],
+  ['CY4', sigCycle(4),            2.0],
+  ['CY6', sigCycle(6),            2.2],
+  ['CY8', sigCycle(8),            2.0],
 ];
 
 const REGIME_MULT = {
@@ -193,7 +301,17 @@ function getRegimeMult(regime, tag) {
   return 1.0;
 }
 
-function predictNext(history) {
+function getSignalsByStrategy(strategy) {
+  switch(strategy) {
+    case 'trend':   return SIGNALS.filter(([t]) => ['WM1','WM2','WM3','SF','P3','P4','P5','WRE','VWB'].includes(t));
+    case 'reverse': return SIGNALS.filter(([t]) => ['SB3','SB5','SB7','MDK','MVR','ENT','ALB'].includes(t));
+    case 'cycle':   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
+    case 'recent':  return SIGNALS.filter(([t]) => ['WRE','VWB','WM1','B10','ENT'].includes(t));
+    default:        return SIGNALS;
+  }
+}
+
+function predictNext(history, strategy = 'auto') {
   const seq = [...history];
   if (seq.length < 8) {
     return { pred: 'TAI', conf: 51, signals: [], n_active: 0, regime: 'INIT' };
@@ -201,7 +319,8 @@ function predictNext(history) {
   const regime = detectRegime(seq);
   const votes = [];
   const activeSignals = [];
-  for (const [tag, fn, capW] of SIGNALS) {
+  const activeSet = getSignalsByStrategy(strategy);
+  for (const [tag, fn, capW] of activeSet) {
     const [acc, total, consistency] = backtestSplit(seq, fn);
     if (acc === null || acc <= 0.50) continue;
     const se = Math.sqrt(0.25 / total);
@@ -284,6 +403,7 @@ class Lc79Session {
     this.stopLossPercent = config.stopLossPercent || 0.30;
     this.algoEnabled = config.algoEnabled !== false;
     this.fixedSide = config.fixedSide || null; // 'TAI' | 'XIU' | null (auto)
+    this.strategy = config.strategy || 'auto'; // auto|trend|reverse|cycle|recent
     this.sessionPlaced = false;
     this.betPending = false;
     this.statWin = 0;
@@ -524,7 +644,7 @@ class Lc79Session {
       }
 
       // Prediction
-      const pred = predictNext(globalHistory);
+      const pred = predictNext(globalHistory, this.strategy || 'auto');
       this.lastPred = pred;
       if (isNewSession) {
         addLog('pred', `🔮 Phiên #${this.sessionId} | AI: ${pred.pred} (${pred.conf}%) | Chế độ: ${pred.regime} | ${pred.n_active} tín hiệu`);
@@ -696,6 +816,7 @@ class Lc79Session {
       stopLossPercent: this.stopLossPercent,
       algoEnabled: this.algoEnabled,
       fixedSide: this.fixedSide,
+      strategy: this.strategy,
       statWin: this.statWin,
       statLose: this.statLose,
       statProfit: this.statProfit,
