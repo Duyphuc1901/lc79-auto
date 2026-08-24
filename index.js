@@ -536,15 +536,13 @@ class Lc79Session {
       const myBet = Array.isArray(data.bets) && data.bets.length > 0 ? data.bets[0] : null;
       const betAmount = myBet ? (myBet.amount || 0) : (this.lastBetAmount || this.baseAmount);
 
-      // prize > 0 thắng, prize = 0 thua (server không gửi số âm)
+      // prize > 0 thắng, prize < 0 thua (số âm), prize = 0 chưa cược
       const won = prize > 0;
-      const profitAmt = won ? prize : betAmount;
+      const lostAmt = prize < 0 ? Math.abs(prize) : betAmount;
+      const profitAmt = won ? prize : lostAmt;
 
-      // Chỉ tính stats nếu có đặt cược phiên này
-      if (betAmount > 0) {
-        if (won) { this.statWin++; this.statProfit += prize; }
-        else { this.statLose++; this.statProfit -= betAmount; }
-      }
+      if (won) { this.statWin++; this.statProfit += prize; }
+      else if (prize < 0 || betAmount > 0) { this.statLose++; this.statProfit += prize; }
 
       const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
       addLog(won ? 'win' : 'lose', `${won ? '✅ THẮNG' : '❌ THUA'} | ${won ? '+' : '-'}${profitAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
@@ -557,7 +555,7 @@ class Lc79Session {
           this.x2Pending = false;
           this.lastLossAmount = 0;
         } else {
-          this.lastLossAmount = betAmount;
+          this.lastLossAmount = prize < 0 ? Math.abs(prize) : betAmount;
           this.x2Pending = true;
         }
       } else {
