@@ -545,17 +545,35 @@ class Lc79Session {
       const total = dices.reduce((s,d) => s+d, 0);
       addLog('result', `🎲 Phiên #${this.sessionId} | ${dices.join('-')} (${total}) → ${result || '?'}`);
 
-      // Đánh dấu cần check kết quả — sẽ xử lý khi phiên tiếp theo bắt đầu
-      this._pendingResultCheck = {
-        placed: this.sessionPlaced,
-        betAmount: this.lastBetAmount || this.currentAmount || this.baseAmount
-      };
-      addLog('info', `📋 pending check: placed=${this.sessionPlaced} amt=${this.lastBetAmount||this.currentAmount||this.baseAmount}`);
+      // Chờ 3 giây — đủ thời gian cho won-session đến nếu thắng
+      if (this.sessionPlaced) {
+        const _betAmt = this.lastBetAmount || this.currentAmount || this.baseAmount;
+        this._loseCheckTimer = setTimeout(() => {
+          if (!this._wonThisSession) {
+            this.statLose++;
+            this.statProfit -= _betAmt;
+            const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
+            addLog('lose', `❌ THUA | -${_betAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
+            if (this.autoRunning && this.x2Enabled) {
+              this.lastLossAmount = _betAmt;
+              this.x2Pending = true;
+            } else {
+              this.currentAmount = this.baseAmount;
+              this.x2Level = 0;
+              this.x2Pending = false;
+            }
+            broadcastState();
+          }
+          this._wonThisSession = false;
+          this.sessionPlaced = false;
+        }, 3000);
+      }
       broadcastState();
     }
 
     else if (event === 'won-session') {
-      this._wonThisSession = true; // flag để session-result biết đã thắng
+      this._wonThisSession = true;
+      if (this._loseCheckTimer) { clearTimeout(this._loseCheckTimer); this._loseCheckTimer = null; }
       // Format: {id, dices, bets:[{won, type, amount}], prize, balance}
       const prize = data.prize ?? 0;
       if (data.balance) this.balance = data.balance;
