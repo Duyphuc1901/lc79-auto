@@ -524,27 +524,31 @@ class Lc79Session {
       const total = dices.reduce((s,d) => s+d, 0);
       addLog('result', `🎲 Phiên #${this.sessionId} | ${dices.join('-')} (${total}) → ${result || '?'}`);
 
-      // Nếu đã đặt cược mà chưa nhận won-session = THUA
-      // (server chỉ gửi won-session khi thắng)
-      if (this.sessionPlaced && !this._wonThisSession) {
-        const lostAmt = this.lastBetAmount || this.baseAmount;
-        this.statLose++;
-        this.statProfit -= lostAmt;
-        const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
-        addLog('lose', `❌ THUA | -${lostAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
-        // X2 martingale
-        if (this.autoRunning && this.x2Enabled) {
-          this.lastLossAmount = lostAmt;
-          this.x2Pending = true;
-        } else {
-          this.currentAmount = this.baseAmount;
-          this.x2Level = 0;
-          this.x2Pending = false;
+      // Chờ 800ms để won-session có cơ hội chạy trước (won-session đến sau session-result)
+      const _sid = this.sessionId;
+      const _placed = this.sessionPlaced;
+      setTimeout(() => {
+        if (!_placed) return;
+        if (!this._wonThisSession) {
+          // Không có won-session = THUA
+          const lostAmt = this.lastBetAmount || this.baseAmount;
+          this.statLose++;
+          this.statProfit -= lostAmt;
+          const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
+          addLog('lose', `❌ THUA | -${lostAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
+          if (this.autoRunning && this.x2Enabled) {
+            this.lastLossAmount = lostAmt;
+            this.x2Pending = true;
+          } else {
+            this.currentAmount = this.baseAmount;
+            this.x2Level = 0;
+            this.x2Pending = false;
+          }
+          broadcastState();
         }
-      }
-      // Reset cho phiên tiếp theo
-      this._wonThisSession = false;
-      this.sessionPlaced = false;
+        this._wonThisSession = false;
+        this.sessionPlaced = false;
+      }, 800);
       broadcastState();
     }
 
@@ -562,8 +566,9 @@ class Lc79Session {
       const lostAmt = prize < 0 ? Math.abs(prize) : betAmount;
       const profitAmt = won ? prize : lostAmt;
 
-      // Chỉ xử lý thắng ở đây, thua được xử lý trong session-result
-      if (won) { this.statWin++; this.statProfit += prize; }
+      // prize bao gồm cả vốn, cần trừ ra để lấy lời thực
+      const profit = won ? (prize - betAmount) : 0;
+      if (won) { this.statWin++; this.statProfit += profit; }
 
       const plStr = this.statProfit >= 0 ? '+' + this.statProfit.toLocaleString() : this.statProfit.toLocaleString();
       addLog(won ? 'win' : 'lose', `${won ? '✅ THẮNG' : '❌ THUA'} | ${won ? '+' : '-'}${profitAmt.toLocaleString()}đ | P/L: ${plStr}đ`);
