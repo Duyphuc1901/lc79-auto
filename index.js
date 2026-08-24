@@ -301,14 +301,42 @@ function getRegimeMult(regime, tag) {
   return 1.0;
 }
 
-function getSignalsByStrategy(strategy) {
-  switch(strategy) {
-    case 'trend':   return SIGNALS.filter(([t]) => ['WM1','WM2','WM3','SF','P3','P4','P5','WRE','VWB'].includes(t));
-    case 'reverse': return SIGNALS.filter(([t]) => ['SB3','SB5','SB7','MDK','MVR','ENT','ALB'].includes(t));
-    case 'cycle':   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
-    case 'recent':  return SIGNALS.filter(([t]) => ['WRE','VWB','WM1','B10','ENT'].includes(t));
-    default:        return SIGNALS;
+// Backtest một signal đơn trên toàn bộ lịch sử
+function backtestSingle(history, fn, minSamples = 20) {
+  if (history.length < minSamples + 5) return null;
+  let hits = 0, total = 0;
+  const start = Math.max(30, history.length - 300); // chỉ dùng 300 phiên gần nhất
+  for (let i = start; i < history.length; i++) {
+    const sub = history.slice(0, i);
+    const pred = fn(sub);
+    if (pred === null) continue;
+    total++;
+    if (pred === history[i]) hits++;
   }
+  if (total < minSamples) return null;
+  return { acc: hits / total, total, hits };
+}
+
+// Tính tỉ lệ thắng cho tất cả thuật toán, trả về sorted list
+function rankAlgorithms(history) {
+  const results = [];
+  for (const [tag, fn] of SIGNALS) {
+    const r = backtestSingle(history, fn);
+    if (r) results.push({ tag, acc: r.acc, total: r.total });
+  }
+  return results.sort((a, b) => b.acc - a.acc);
+}
+
+function getSignalsByStrategy(strategy) {
+  // Chiến lược combo
+  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['WM1','WM2','WM3','SF','P3','P4','P5','WRE','VWB'].includes(t));
+  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['SB3','SB5','SB7','MDK','MVR','ENT','ALB'].includes(t));
+  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
+  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','WM1','B10','ENT'].includes(t));
+  // Thuật toán đơn lẻ
+  const single = SIGNALS.find(([t]) => t === strategy);
+  if (single) return [single];
+  return SIGNALS;
 }
 
 function predictNext(history, strategy = 'auto') {
@@ -912,14 +940,462 @@ app.get('/api/logs', (req, res) => {
   res.json(logs);
 });
 
+app.get('/api/rank', (req, res) => {
+  if (globalHistory.length < 50) return res.json([]);
+  const ranked = rankAlgorithms(globalHistory);
+  res.json(ranked);
+});
+
 app.get('/api/predict', (req, res) => {
   res.json(predictNext(globalHistory));
 });
 
 // Serve inline HTML
 app.get('/', (req, res) => {
-  res.send("<!DOCTYPE html>\n<html lang=\"vi\">\n<head>\n<meta charset=\"UTF-8\"/>\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"/>\n<title>AutoLC</title>\n<link href=\"https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap\" rel=\"stylesheet\"/>\n<style>\n*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}\n:root{\n  --bg:#07090d;--s1:#0d1117;--s2:#161b22;--s3:#21262d;\n  --b1:#30363d;--b2:#3d444d;\n  --t1:#e6edf3;--t2:#8b949e;--t3:#484f58;\n  --tai:#39d98a;--tai2:rgba(57,217,138,.12);--tai3:rgba(57,217,138,.25);\n  --xiu:#f85149;--xiu2:rgba(248,81,73,.12);--xiu3:rgba(248,81,73,.25);\n  --gold:#e3b341;--gold2:rgba(227,179,65,.12);\n  --blue:#58a6ff;--blue2:rgba(88,166,255,.15);\n  --purple:#bc8cff;\n  --mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;\n  --r:10px;--r2:6px;\n}\nhtml,body{min-height:100vh;background:var(--bg);color:var(--t1);font-family:var(--sans);font-size:14px}\n::-webkit-scrollbar{width:3px;height:3px}\n::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}\n\n/* LAYOUT */\n.app{display:flex;flex-direction:column;min-height:100vh}\n\n/* TOPBAR */\n.topbar{\n  display:flex;align-items:center;justify-content:space-between;\n  padding:0 16px;height:48px;\n  background:var(--s1);border-bottom:1px solid var(--b1);\n  position:sticky;top:0;z-index:100;\n}\n.logo{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:3px;color:var(--t1)}\n.logo em{color:var(--gold);font-style:normal}\n.conn-badge{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--t2);font-family:var(--mono)}\n.conn-dot{width:6px;height:6px;border-radius:50%;transition:background .3s}\n\n/* BOTTOM NAV */\n.botnav{\n  position:fixed;bottom:0;left:0;right:0;\n  display:flex;background:var(--s1);border-top:1px solid var(--b1);\n  z-index:100;\n}\n.botnav button{\n  flex:1;padding:10px 4px 12px;background:transparent;border:none;\n  color:var(--t3);font-size:10px;font-family:var(--sans);\n  display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;\n  transition:color .2s;\n}\n.botnav button.active{color:var(--blue)}\n.botnav button svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.5}\n.botnav button span{font-size:10px}\n\n/* MAIN */\nmain{flex:1;padding:16px;padding-bottom:72px;max-width:600px;margin:0 auto;width:100%}\n\n/* VIEWS */\n.view{display:none}.view.show{display:block}\n\n/* CARDS */\n.card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);overflow:hidden;margin-bottom:12px}\n.card-head{\n  padding:10px 14px;font-size:10px;font-weight:600;letter-spacing:1.5px;\n  text-transform:uppercase;color:var(--t2);\n  border-bottom:1px solid var(--b1);background:var(--s2);\n  display:flex;align-items:center;gap:6px;\n}\n.card-body{padding:14px}\n\n/* ACCOUNT HERO */\n.acct-hero{\n  padding:20px 16px;\n  background:linear-gradient(135deg,var(--s2) 0%,var(--s1) 100%);\n  border-bottom:1px solid var(--b1);\n}\n.acct-nick{font-size:18px;font-weight:700;margin-bottom:4px}\n.acct-bal{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--gold);line-height:1}\n.acct-bal-label{font-size:11px;color:var(--t2);margin-top:2px}\n.acct-status{\n  display:inline-flex;align-items:center;gap:5px;\n  font-size:11px;font-family:var(--mono);\n  padding:3px 8px;border-radius:20px;margin-top:8px;\n}\n.status-on{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}\n.status-off{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}\n\n/* PREDICTION */\n.pred-hero{\n  padding:24px 16px;text-align:center;\n  background:linear-gradient(180deg,var(--s2) 0%,var(--s1) 100%);\n}\n.pred-big{\n  font-family:var(--mono);font-weight:700;font-size:56px;line-height:1;\n  letter-spacing:4px;margin-bottom:8px;\n  text-shadow:0 0 40px currentColor;\n}\n.pred-big.tai{color:var(--tai)}\n.pred-big.xiu{color:var(--xiu)}\n.pred-big.empty{color:var(--t3);font-size:32px}\n.conf-bar-wrap{width:180px;margin:0 auto 12px;height:4px;background:var(--s3);border-radius:2px;overflow:hidden}\n.conf-bar{height:100%;border-radius:2px;transition:width .5s;background:var(--blue)}\n.conf-bar.tai{background:var(--tai)}\n.conf-bar.xiu{background:var(--xiu)}\n.pred-meta{display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--t2)}\n.pred-meta span{font-family:var(--mono)}\n\n/* ROWS */\n.kv{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--b1)}\n.kv:last-child{border:none}\n.kv-k{color:var(--t2);font-size:13px}\n.kv-v{font-family:var(--mono);font-size:13px;text-align:right}\n\n/* STATS */\n.stat3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}\n.stat-cell{background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);padding:12px 8px;text-align:center}\n.stat-cell .n{font-family:var(--mono);font-weight:700;font-size:22px;line-height:1;margin-bottom:4px}\n.stat-cell .l{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}\n\n/* BEADS */\n.beads{display:flex;flex-wrap:wrap;gap:5px}\n.bead{\n  width:30px;height:30px;border-radius:50%;\n  display:flex;align-items:center;justify-content:center;\n  font-size:10px;font-family:var(--mono);font-weight:700;\n}\n.bead.t{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}\n.bead.x{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}\n\n/* AUTO BTN */\n.auto-btn{\n  width:100%;padding:14px;border-radius:var(--r);font-size:15px;font-weight:700;\n  border:none;cursor:pointer;font-family:var(--sans);\n  display:flex;align-items:center;justify-content:center;gap:8px;\n  transition:all .2s;letter-spacing:.5px;\n}\n.auto-btn.start{background:var(--tai);color:#000}\n.auto-btn.start:active{background:#2cc47a}\n.auto-btn.stop{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}\n\n/* PULSE */\n@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}\n.pulse{animation:pulse 1.5s infinite}\n\n/* LOGS */\n.log-wrap{height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}\n.log-item{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:4px 2px;border-radius:4px}\n.log-item:hover{background:var(--s2)}\n.log-t{font-family:var(--mono);font-size:10px;color:var(--t3);padding-top:1px}\n.log-m{font-size:12px;line-height:1.5;word-break:break-word}\n\n/* FORM */\n.field{margin-bottom:14px}\n.field label{display:block;font-size:11px;font-weight:600;color:var(--t2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}\n.field input,.field select{\n  width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);\n  padding:10px 12px;color:var(--t1);font-size:14px;font-family:var(--mono);outline:none;\n  transition:border .2s;\n}\n.field input:focus,.field select:focus{border-color:var(--blue)}\n.field select option{background:var(--s2)}\n.toggle-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}\n.toggle-row label{font-size:13px;color:var(--t1)}\n.tog{padding:5px 14px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:var(--mono);transition:all .2s}\n.tog.on{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}\n.tog.off{background:var(--s3);color:var(--t2);border:1px solid var(--b1)}\n.save-btn{\n  width:100%;padding:12px;border-radius:var(--r);background:var(--blue);\n  color:#000;font-size:14px;font-weight:700;border:none;cursor:pointer;font-family:var(--sans);\n}\n.err-msg{color:var(--xiu);font-size:13px;margin:6px 0;min-height:18px;font-family:var(--mono)}\n\n/* LOGIN */\n.login-wrap{max-width:360px;margin:40px auto}\n.login-title{font-size:20px;font-weight:700;margin-bottom:4px}\n.login-sub{font-size:13px;color:var(--t2);margin-bottom:20px}\n\n/* CHIP */\n.chip{display:inline-block;font-family:var(--mono);font-size:10px;padding:2px 7px;border-radius:4px;background:var(--gold2);color:var(--gold);border:1px solid rgba(227,179,65,.3)}\n.chip.blue{background:var(--blue2);color:var(--blue);border-color:rgba(88,166,255,.3)}\n.chip.purple{background:rgba(188,140,255,.1);color:var(--purple);border-color:rgba(188,140,255,.3)}\n\n/* SESSION BADGE */\n.session-badge{\n  display:flex;align-items:center;gap:6px;\n  font-family:var(--mono);font-size:11px;color:var(--t2);\n}\n.session-badge .s-dot{width:5px;height:5px;border-radius:50%;background:var(--tai)}\n</style>\n</head>\n<body>\n<div class=\"app\">\n\n<div class=\"topbar\">\n  <div class=\"logo\">AUTO<em>LC</em></div>\n  <div class=\"conn-badge\">\n    <div class=\"conn-dot\" id=\"cDot\" style=\"background:var(--xiu)\"></div>\n    <span id=\"cLabel\">\u0110ang k\u1ebft n\u1ed1i</span>\n  </div>\n</div>\n\n<main>\n<div class=\"view show\" id=\"v-home\">\n\n  <!-- Account hero -->\n  <div class=\"card\">\n    <div class=\"acct-hero\" id=\"acctHero\">\n      <div class=\"acct-nick\" id=\"dNick\">Ch\u01b0a \u0111\u0103ng nh\u1eadp</div>\n      <div class=\"acct-bal\" id=\"dBal\">\u2014</div>\n      <div class=\"acct-bal-label\">S\u1ed1 d\u01b0</div>\n      <div class=\"acct-status status-off\" id=\"dConn\">\n        <span>\u25cf</span><span id=\"dConnTxt\">Ch\u01b0a k\u1ebft n\u1ed1i</span>\n      </div>\n    </div>\n\n    <!-- Prediction -->\n    <div class=\"pred-hero\">\n      <div class=\"pred-big empty\" id=\"dPred\">\u2014</div>\n      <div class=\"conf-bar-wrap\"><div class=\"conf-bar\" id=\"dConfBar\" style=\"width:0%\"></div></div>\n      <div class=\"pred-meta\">\n        <div>Tin c\u1eady <span id=\"dConf\">\u2014</span></div>\n        <div>Ch\u1ebf \u0111\u1ed9 <span id=\"dRegime\">\u2014</span></div>\n        <div><span id=\"dSig\">\u2014</span> t\u00edn hi\u1ec7u</div>\n      </div>\n    </div>\n\n    <!-- Auto control -->\n    <div class=\"card-body\" style=\"padding:14px\">\n      <div class=\"kv\">\n        <span class=\"kv-k\">Tr\u1ea1ng th\u00e1i</span>\n        <span id=\"dAutoStatus\" class=\"kv-v\" style=\"color:var(--t3)\">D\u1eebng</span>\n      </div>\n      <div class=\"kv\">\n        <span class=\"kv-k\">M\u1ee9c c\u01b0\u1ee3c</span>\n        <span class=\"kv-v\" id=\"dAmount\">\u2014</span>\n      </div>\n      <div class=\"kv\" id=\"dX2Row\" style=\"display:none\">\n        <span class=\"kv-k\">G\u1ea5p th\u1ebfp</span>\n        <span class=\"kv-v purple\" id=\"dX2\">\u2014</span>\n      </div>\n      <div class=\"kv\" style=\"border:none;padding-bottom:0\">\n        <span class=\"kv-k\">Phi\u00ean hi\u1ec7n t\u1ea1i</span>\n        <div class=\"session-badge\"><div class=\"s-dot pulse\"></div><span id=\"dSession\">\u2014</span></div>\n      </div>\n    </div>\n\n    <div style=\"padding:0 14px 14px\">\n      <button class=\"auto-btn start\" id=\"autoBtn\" onclick=\"toggleAuto()\">\n        <svg width=\"16\" height=\"16\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><polygon points=\"5,3 19,12 5,21\"/></svg>\n        B\u1eadt Auto C\u01b0\u1ee3c\n      </button>\n    </div>\n  </div>\n\n  <!-- Stats -->\n  <div class=\"card\">\n    <div class=\"card-head\">\n      <svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><polyline points=\"22 12 18 12 15 21 9 3 6 12 2 12\"/></svg>\n      Th\u1ed1ng k\u00ea phi\u00ean\n    </div>\n    <div class=\"card-body\">\n      <div class=\"stat3\">\n        <div class=\"stat-cell\">\n          <div class=\"n\" id=\"dWin\" style=\"color:var(--tai)\">0</div>\n          <div class=\"l\">Th\u1eafng</div>\n        </div>\n        <div class=\"stat-cell\">\n          <div class=\"n\" id=\"dLose\" style=\"color:var(--xiu)\">0</div>\n          <div class=\"l\">Thua</div>\n        </div>\n        <div class=\"stat-cell\">\n          <div class=\"n\" id=\"dPL\" style=\"font-size:15px;color:var(--t2)\">+0</div>\n          <div class=\"l\">P/L (\u0111)</div>\n        </div>\n      </div>\n      <div class=\"beads\" id=\"dBeads\"></div>\n    </div>\n  </div>\n\n</div><!-- v-home -->\n\n<!-- LOGS VIEW -->\n<div class=\"view\" id=\"v-logs\">\n  <div class=\"card\">\n    <div class=\"card-head\">\n      <svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z\"/><polyline points=\"14 2 14 8 20 8\"/></svg>\n      Nh\u1eadt k\u00fd ho\u1ea1t \u0111\u1ed9ng\n    </div>\n    <div class=\"card-body\" style=\"padding:8px\">\n      <div class=\"log-wrap\" id=\"logBox\"></div>\n    </div>\n  </div>\n</div>\n\n<!-- CONFIG VIEW -->\n<div class=\"view\" id=\"v-cfg\">\n  <div class=\"card\">\n    <div class=\"card-head\">\n      <svg width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41\"/></svg>\n      C\u1ea5u h\u00ecnh Bot\n    </div>\n    <div class=\"card-body\">\n      <div class=\"field\"><label>M\u1ee9c c\u01b0\u1ee3c (\u0111)</label><input id=\"cAmount\" type=\"number\" value=\"1000\" min=\"100\"/></div>\n      <div class=\"field\"><label>Stop-loss (%)</label><input id=\"cStop\" type=\"number\" value=\"30\" min=\"1\" max=\"100\"/></div>\n      <div class=\"field\"><label>C\u1ea7u ch\u1ed1t</label>\n        <select id=\"cSide\">\n          <option value=\"\">\ud83e\udd16 AI t\u1ef1 ch\u1ecdn</option>\n          <option value=\"TAI\">\ud83d\udfe2 Lu\u00f4n T\u00c0I</option>\n          <option value=\"XIU\">\ud83d\udd34 Lu\u00f4n X\u1ec8U</option>\n        </select>\n      </div>\n      <div class=\"field\"><label>Chi\u1ebfn l\u01b0\u1ee3c AI</label>\n        <select id=\"cStrategy\">\n          <option value=\"auto\">&#129504; T\u1ef1 \u0111\u1ed9ng</option>\n          <option value=\"trend\">&#128200; Theo c\u1ea7u</option>\n          <option value=\"reverse\">&#128260; B\u1eaft c\u1ea7u g\u00e3y</option>\n          <option value=\"cycle\">&#128257; Chu k\u1ef3</option>\n          <option value=\"recent\">&#9889; Ng\u1eafn h\u1ea1n</option>\n        </select>\n      </div>\n      <div class=\"toggle-row\">\n        <label>G\u1ea5p th\u1ebfp X2</label>\n        <button class=\"tog off\" id=\"togX2\" onclick=\"toggleX2()\">T\u1eaeT</button>\n      </div>\n      <div id=\"x2Extra\" style=\"display:none\">\n        <div class=\"field\"><label>Gi\u1edbi h\u1ea1n X2 (l\u1ea7n)</label><input id=\"cX2max\" type=\"number\" value=\"5\" min=\"1\" max=\"10\"/></div>\n      </div>\n      <button class=\"save-btn\" onclick=\"saveConfig()\">L\u01b0u c\u1ea5u h\u00ecnh</button>\n    </div>\n  </div>\n</div>\n\n<!-- LOGIN VIEW -->\n<div class=\"view\" id=\"v-login\">\n  <div class=\"login-wrap\">\n    <div class=\"login-title\">\u0110\u0103ng nh\u1eadp</div>\n    <div class=\"login-sub\">K\u1ebft n\u1ed1i t\u00e0i kho\u1ea3n LC79 c\u1ee7a b\u1ea1n</div>\n    <div class=\"card\">\n      <div class=\"card-body\">\n        <div class=\"field\"><label>T\u00ean \u0111\u0103ng nh\u1eadp</label><input id=\"iUser\" placeholder=\"username\" autocomplete=\"username\"/></div>\n        <div class=\"field\"><label>M\u1eadt kh\u1ea9u</label><input id=\"iPass\" type=\"password\" placeholder=\"\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\" autocomplete=\"current-password\"/></div>\n        <div class=\"err-msg\" id=\"loginErr\"></div>\n        <button class=\"save-btn\" onclick=\"doLogin()\">\u0110\u0103ng nh\u1eadp</button>\n        <button onclick=\"doLogout()\" style=\"width:100%;padding:10px;margin-top:8px;background:transparent;border:1px solid var(--b1);color:var(--t2);border-radius:var(--r2);cursor:pointer;font-size:13px\">\u0110\u0103ng xu\u1ea5t</button>\n      </div>\n    </div>\n  </div>\n</div>\n\n</main>\n\n<!-- BOTTOM NAV -->\n<nav class=\"botnav\">\n  <button class=\"active\" id=\"nb-home\" onclick=\"showView('home',this)\">\n    <svg viewBox=\"0 0 24 24\"><path d=\"M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/><polyline points=\"9 22 9 12 15 12 15 22\"/></svg>\n    <span>T\u1ed5ng quan</span>\n  </button>\n  <button id=\"nb-logs\" onclick=\"showView('logs',this)\">\n    <svg viewBox=\"0 0 24 24\"><path d=\"M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z\"/><polyline points=\"14 2 14 8 20 8\"/><line x1=\"16\" y1=\"13\" x2=\"8\" y2=\"13\"/><line x1=\"16\" y1=\"17\" x2=\"8\" y2=\"17\"/></svg>\n    <span>Nh\u1eadt k\u00fd</span>\n  </button>\n  <button id=\"nb-cfg\" onclick=\"showView('cfg',this)\">\n    <svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"3\"/><path d=\"M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41\"/></svg>\n    <span>C\u1ea5u h\u00ecnh</span>\n  </button>\n  <button id=\"nb-login\" onclick=\"showView('login',this)\">\n    <svg viewBox=\"0 0 24 24\"><path d=\"M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2\"/><circle cx=\"12\" cy=\"7\" r=\"4\"/></svg>\n    <span>T\u00e0i kho\u1ea3n</span>\n  </button>\n</nav>\n\n</div>\n<script>\nconst LC={info:'#58a6ff',pred:'#e3b341',result:'#8b949e',win:'#39d98a',lose:'#f85149',bet:'#bc8cff',warn:'#d29922',error:'#f85149'};\nlet st=null,ws=null,x2On=false;\nconst fmt=n=>Number(n||0).toLocaleString('vi-VN');\n\nfunction showView(v,btn){\n  document.querySelectorAll('.view').forEach(d=>d.classList.remove('show'));\n  document.getElementById('v-'+v).classList.add('show');\n  document.querySelectorAll('.botnav button').forEach(b=>b.classList.remove('active'));\n  const nb=document.getElementById('nb-'+v);\n  if(nb)nb.classList.add('active');\n}\n\nfunction connect(){\n  const proto=location.protocol==='https:'?'wss':'ws';\n  ws=new WebSocket(proto+'://'+location.host);\n  ws.onopen=()=>{\n    document.getElementById('cDot').style.background='var(--tai)';\n    document.getElementById('cLabel').textContent='Online';\n  };\n  ws.onclose=()=>{\n    document.getElementById('cDot').style.background='var(--xiu)';\n    document.getElementById('cLabel').textContent='Offline';\n    setTimeout(connect,3000);\n  };\n  ws.onmessage=(e)=>{\n    const msg=JSON.parse(e.data);\n    if(msg.type==='state'){st=msg.data;render()}\n    if(msg.type==='logs'){msg.data.slice(0,50).forEach(l=>addLog(l,false))}\n    if(msg.type==='log'){addLog(msg.data,true)}\n  };\n}\n\nfunction render(){\n  if(!st)return;\n  // Account\n  document.getElementById('dNick').textContent=st.nickname||'\u2014';\n  document.getElementById('dBal').textContent=fmt(st.balance)+'\u0111';\n  const conn=st.connected;\n  const cEl=document.getElementById('dConn');\n  const cTxt=document.getElementById('dConnTxt');\n  cEl.className='acct-status '+(conn?'status-on':'status-off');\n  cTxt.textContent=conn?'\u0110ang k\u1ebft n\u1ed1i':'M\u1ea5t k\u1ebft n\u1ed1i';\n\n  // Prediction\n  const pred=st.lastPred;\n  const pEl=document.getElementById('dPred');\n  if(pred&&pred.pred!=='\u2014'){\n    pEl.textContent=pred.pred;\n    pEl.className='pred-big '+(pred.pred==='TAI'?'tai':'xiu');\n    const pct=Math.max(0,Math.min(100,(pred.conf-50)*2));\n    const bar=document.getElementById('dConfBar');\n    bar.style.width=pct+'%';\n    bar.className='conf-bar '+(pred.pred==='TAI'?'tai':'xiu');\n    document.getElementById('dConf').textContent=pred.conf+'%';\n    document.getElementById('dRegime').textContent=pred.regime||'\u2014';\n    document.getElementById('dSig').textContent=pred.n_active??'0';\n  } else {\n    pEl.textContent='\u2014';pEl.className='pred-big empty';\n  }\n\n  // Auto\n  const running=st.autoRunning;\n  document.getElementById('dAutoStatus').textContent=running?'\u25cf \u0110ANG CH\u1ea0Y':'\u25cb D\u1eebng';\n  document.getElementById('dAutoStatus').style.color=running?'var(--tai)':'var(--t3)';\n  const btn=document.getElementById('autoBtn');\n  if(running){\n    btn.className='auto-btn stop';\n    btn.innerHTML='<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><rect x=\"6\" y=\"4\" width=\"4\" height=\"16\"/><rect x=\"14\" y=\"4\" width=\"4\" height=\"16\"/></svg> D\u1eebng Auto';\n  } else {\n    btn.className='auto-btn start';\n    btn.innerHTML='<svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"currentColor\"><polygon points=\"5,3 19,12 5,21\"/></svg> B\u1eadt Auto C\u01b0\u1ee3c';\n  }\n  document.getElementById('dAmount').textContent=fmt(st.baseAmount)+'\u0111';\n  document.getElementById('dSession').textContent='#'+(st.sessionId||'\u2014');\n  if(st.x2Enabled){\n    document.getElementById('dX2Row').style.display='flex';\n    document.getElementById('dX2').textContent='Lv.'+st.x2Level+'/'+st.x2MaxLevel;\n  } else {\n    document.getElementById('dX2Row').style.display='none';\n  }\n\n  // Stats\n  document.getElementById('dWin').textContent=st.statWin;\n  document.getElementById('dLose').textContent=st.statLose;\n  const pl=document.getElementById('dPL');\n  const profit=st.statProfit||0;\n  pl.textContent=(profit>=0?'+':'')+fmt(profit);\n  pl.style.color=profit>0?'var(--tai)':profit<0?'var(--xiu)':'var(--t2)';\n  pl.style.fontSize=Math.abs(profit)>=1000000?'12px':Math.abs(profit)>=100000?'14px':'16px';\n\n  // Beads\n  const beads=document.getElementById('dBeads');\n  beads.innerHTML=(st.recentHistory||[]).slice(-20).map(r=>{\n    const t=r==='TAI';\n    return '<div class=\"bead '+(t?'t':'x')+'\">'+(t?'T':'X')+'</div>';\n  }).join('');\n}\n\nconst LOG_COLORS=LC;\nfunction addLog(l,prepend){\n  const box=document.getElementById('logBox');\n  const div=document.createElement('div');\n  div.className='log-item';\n  div.innerHTML='<span class=\"log-t\">'+l.time+'</span><span class=\"log-m\" style=\"color:'+(LOG_COLORS[l.type]||'var(--t1)')+'\">'+l.msg+'</span>';\n  if(prepend)box.insertBefore(div,box.firstChild);\n  else box.appendChild(div);\n  if(box.children.length>200)box.lastChild.remove();\n}\n\nasync function api(path,body){\n  try{\n    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});\n    return r.json();\n  }catch(e){return{error:e.message}}\n}\n\nasync function doLogin(){\n  const err=document.getElementById('loginErr');\n  err.textContent='';\n  const u=document.getElementById('iUser').value.trim();\n  const p=document.getElementById('iPass').value;\n  if(!u||!p){err.textContent='Nh\u1eadp \u0111\u1ee7 th\u00f4ng tin';return}\n  err.textContent='\u23f3 \u0110ang k\u1ebft n\u1ed1i...';\n  const cfg=getConfig();\n  const res=await api('/api/login',{username:u,password:p,config:cfg});\n  if(res.error){err.textContent='\u274c '+res.error}\n  else{err.textContent='\u2705 Th\u00e0nh c\u00f4ng!';setTimeout(()=>showView('home',null),800)}\n}\n\nasync function doLogout(){\n  await api('/api/logout',{});\n  st=null;\n}\n\nasync function toggleAuto(){\n  if(!st){showView('login',null);return}\n  await api(st.autoRunning?'/api/auto/stop':'/api/auto/start',{});\n}\n\nfunction getConfig(){\n  return{\n    baseAmount:+document.getElementById('cAmount').value||1000,\n    x2Enabled:x2On,\n    x2MaxLevel:+document.getElementById('cX2max').value||5,\n    stopLossPercent:+document.getElementById('cStop').value||30,\n    algoEnabled:true,\n    fixedSide:document.getElementById('cSide').value,\n    strategy:document.getElementById('cStrategy')?document.getElementById('cStrategy').value:'auto'\n  };\n}\n\nfunction toggleX2(){\n  x2On=!x2On;\n  const btn=document.getElementById('togX2');\n  btn.textContent=x2On?'B\u1eacT':'T\u1eaeT';\n  btn.className='tog '+(x2On?'on':'off');\n  document.getElementById('x2Extra').style.display=x2On?'block':'none';\n}\n\nasync function saveConfig(){\n  if(!st){showView('home',null);return}\n  await api('/api/config',getConfig());\n  showView('home',null);\n  document.getElementById('nb-home').classList.add('active');\n  document.getElementById('nb-cfg').classList.remove('active');\n}\n\nconnect();\n</script>\n</body>\n</html>");
+  const html = `<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>AutoLC</title>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet"/>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07090d;--s1:#0d1117;--s2:#161b22;--s3:#21262d;
+  --b1:#30363d;--b2:#3d444d;
+  --t1:#e6edf3;--t2:#8b949e;--t3:#484f58;
+  --tai:#39d98a;--tai2:rgba(57,217,138,.12);--tai3:rgba(57,217,138,.25);
+  --xiu:#f85149;--xiu2:rgba(248,81,73,.12);--xiu3:rgba(248,81,73,.25);
+  --gold:#e3b341;--gold2:rgba(227,179,65,.12);
+  --blue:#58a6ff;--blue2:rgba(88,166,255,.15);
+  --purple:#bc8cff;
+  --mono:'JetBrains Mono',monospace;--sans:'Inter',sans-serif;
+  --r:10px;--r2:6px;
+}
+html,body{min-height:100vh;background:var(--bg);color:var(--t1);font-family:var(--sans);font-size:14px}
+::-webkit-scrollbar{width:3px}::-webkit-scrollbar-thumb{background:var(--b2);border-radius:2px}
+.app{display:flex;flex-direction:column;min-height:100vh}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:0 16px;height:48px;background:var(--s1);border-bottom:1px solid var(--b1);position:sticky;top:0;z-index:100}
+.logo{font-family:var(--mono);font-weight:700;font-size:15px;letter-spacing:3px}
+.logo em{color:var(--gold);font-style:normal}
+.conn-badge{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--t2);font-family:var(--mono)}
+.conn-dot{width:6px;height:6px;border-radius:50%;transition:background .3s}
+.botnav{position:fixed;bottom:0;left:0;right:0;display:flex;background:var(--s1);border-top:1px solid var(--b1);z-index:100}
+.botnav button{flex:1;padding:10px 4px 12px;background:transparent;border:none;color:var(--t3);font-size:10px;font-family:var(--sans);display:flex;flex-direction:column;align-items:center;gap:3px;cursor:pointer;transition:color .2s}
+.botnav button.active{color:var(--blue)}
+.botnav button svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.5}
+main{flex:1;padding:16px;padding-bottom:72px;max-width:600px;margin:0 auto;width:100%}
+.view{display:none}.view.show{display:block}
+.card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);overflow:hidden;margin-bottom:12px}
+.card-head{padding:10px 14px;font-size:10px;font-weight:600;letter-spacing:1.5px;text-transform:uppercase;color:var(--t2);border-bottom:1px solid var(--b1);background:var(--s2);display:flex;align-items:center;gap:6px}
+.card-body{padding:14px}
+.acct-hero{padding:20px 16px;background:linear-gradient(135deg,var(--s2),var(--s1));border-bottom:1px solid var(--b1)}
+.acct-nick{font-size:18px;font-weight:700;margin-bottom:4px}
+.acct-bal{font-family:var(--mono);font-size:28px;font-weight:700;color:var(--gold);line-height:1}
+.acct-bal-label{font-size:11px;color:var(--t2);margin-top:2px}
+.acct-status{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-family:var(--mono);padding:3px 8px;border-radius:20px;margin-top:8px}
+.status-on{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}
+.status-off{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}
+.pred-hero{padding:24px 16px;text-align:center;background:linear-gradient(180deg,var(--s2),var(--s1))}
+.pred-big{font-family:var(--mono);font-weight:700;font-size:56px;line-height:1;letter-spacing:4px;margin-bottom:8px;text-shadow:0 0 40px currentColor}
+.pred-big.tai{color:var(--tai)}.pred-big.xiu{color:var(--xiu)}.pred-big.empty{color:var(--t3);font-size:32px}
+.conf-bar-wrap{width:180px;margin:0 auto 12px;height:4px;background:var(--s3);border-radius:2px;overflow:hidden}
+.conf-bar{height:100%;border-radius:2px;transition:width .5s}
+.conf-bar.tai{background:var(--tai)}.conf-bar.xiu{background:var(--xiu)}
+.pred-meta{display:flex;justify-content:center;gap:16px;font-size:12px;color:var(--t2)}
+.pred-meta span{font-family:var(--mono)}
+.kv{display:flex;justify-content:space-between;align-items:center;padding:9px 0;border-bottom:1px solid var(--b1)}
+.kv:last-child{border:none}
+.kv-k{color:var(--t2);font-size:13px}
+.kv-v{font-family:var(--mono);font-size:13px;text-align:right}
+.stat3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:12px}
+.stat-cell{background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);padding:12px 8px;text-align:center}
+.stat-cell .n{font-family:var(--mono);font-weight:700;font-size:22px;line-height:1;margin-bottom:4px}
+.stat-cell .l{font-size:10px;color:var(--t2);text-transform:uppercase;letter-spacing:.5px}
+.beads{display:flex;flex-wrap:wrap;gap:5px}
+.bead{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:10px;font-family:var(--mono);font-weight:700}
+.bead.t{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}
+.bead.x{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}
+.auto-btn{width:100%;padding:14px;border-radius:var(--r);font-size:15px;font-weight:700;border:none;cursor:pointer;font-family:var(--sans);display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;letter-spacing:.5px}
+.auto-btn.start{background:var(--tai);color:#000}
+.auto-btn.stop{background:var(--xiu2);color:var(--xiu);border:1px solid var(--xiu3)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+.pulse{animation:pulse 1.5s infinite}
+.log-wrap{height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.log-item{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:4px 2px;border-radius:4px}
+.log-item:hover{background:var(--s2)}
+.log-t{font-family:var(--mono);font-size:10px;color:var(--t3);padding-top:1px}
+.log-m{font-size:12px;line-height:1.5;word-break:break-word}
+.field{margin-bottom:14px}
+.field label{display:block;font-size:11px;font-weight:600;color:var(--t2);text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px}
+.field input,.field select{width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r2);padding:10px 12px;color:var(--t1);font-size:14px;font-family:var(--mono);outline:none;transition:border .2s}
+.field input:focus,.field select:focus{border-color:var(--blue)}
+.field select option{background:var(--s2)}
+.toggle-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.toggle-row label{font-size:13px;color:var(--t1)}
+.tog{padding:5px 14px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:none;font-family:var(--mono);transition:all .2s}
+.tog.on{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}
+.tog.off{background:var(--s3);color:var(--t2);border:1px solid var(--b1)}
+.save-btn{width:100%;padding:12px;border-radius:var(--r);background:var(--blue);color:#000;font-size:14px;font-weight:700;border:none;cursor:pointer;font-family:var(--sans)}
+.err-msg{color:var(--xiu);font-size:13px;margin:6px 0;min-height:18px;font-family:var(--mono)}
+.login-wrap{max-width:360px;margin:40px auto}
+.login-title{font-size:20px;font-weight:700;margin-bottom:4px}
+.login-sub{font-size:13px;color:var(--t2);margin-bottom:20px}
+.session-badge{display:flex;align-items:center;gap:6px;font-family:var(--mono);font-size:11px;color:var(--t2)}
+.session-badge .s-dot{width:5px;height:5px;border-radius:50%;background:var(--tai)}
+.rank-list{display:flex;flex-direction:column;gap:6px}
+.rank-item{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:var(--s2);border-radius:var(--r2);border:1px solid var(--b1);cursor:pointer;transition:border .15s}
+.rank-item.selected{border-color:var(--blue)}
+.rank-item.best{border-color:var(--tai)}
+.rank-name{font-size:13px;font-weight:500}
+.rank-acc{font-family:var(--mono);font-size:12px}
+.rank-badge{font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px}
+.badge-best{background:var(--tai2);color:var(--tai);border:1px solid var(--tai3)}
+.badge-good{background:var(--blue2);color:var(--blue);border:1px solid rgba(88,166,255,.3)}
+.rank-loading{color:var(--t2);font-size:13px;padding:12px 0;text-align:center;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="app">
+<div class="topbar">
+  <div class="logo">AUTO<em>LC</em></div>
+  <div class="conn-badge">
+    <div class="conn-dot" id="cDot" style="background:var(--xiu)"></div>
+    <span id="cLabel">Đang kết nối</span>
+  </div>
+</div>
+<main>
+
+<!-- HOME -->
+<div class="view show" id="v-home">
+  <div class="card">
+    <div class="acct-hero">
+      <div class="acct-nick" id="dNick">Chưa đăng nhập</div>
+      <div class="acct-bal" id="dBal">—</div>
+      <div class="acct-bal-label">Số dư</div>
+      <div class="acct-status status-off" id="dConn"><span>●</span><span id="dConnTxt">Chưa kết nối</span></div>
+    </div>
+    <div class="pred-hero">
+      <div class="pred-big empty" id="dPred">—</div>
+      <div class="conf-bar-wrap"><div class="conf-bar" id="dConfBar" style="width:0%"></div></div>
+      <div class="pred-meta">
+        <div>Tin cậy <span id="dConf">—</span></div>
+        <div>Chế độ <span id="dRegime">—</span></div>
+        <div><span id="dSig">—</span> tín hiệu</div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="kv"><span class="kv-k">Trạng thái</span><span id="dAutoStatus" class="kv-v" style="color:var(--t3)">Dừng</span></div>
+      <div class="kv"><span class="kv-k">Mức cược</span><span class="kv-v" id="dAmount">—</span></div>
+      <div class="kv" id="dX2Row" style="display:none"><span class="kv-k">Gấp thếp</span><span class="kv-v" style="color:var(--purple)" id="dX2">—</span></div>
+      <div class="kv" style="border:none;padding-bottom:0"><span class="kv-k">Phiên hiện tại</span><div class="session-badge"><div class="s-dot pulse"></div><span id="dSession">—</span></div></div>
+    </div>
+    <div style="padding:0 14px 14px">
+      <button class="auto-btn start" id="autoBtn" onclick="toggleAuto()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg>
+        Bật Auto Cược
+      </button>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-head">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Thống kê phiên
+    </div>
+    <div class="card-body">
+      <div class="stat3">
+        <div class="stat-cell"><div class="n" id="dWin" style="color:var(--tai)">0</div><div class="l">Thắng</div></div>
+        <div class="stat-cell"><div class="n" id="dLose" style="color:var(--xiu)">0</div><div class="l">Thua</div></div>
+        <div class="stat-cell"><div class="n" id="dPL" style="font-size:15px;color:var(--t2)">+0</div><div class="l">P/L (đ)</div></div>
+      </div>
+      <div class="beads" id="dBeads"></div>
+    </div>
+  </div>
+</div>
+
+<!-- LOGS -->
+<div class="view" id="v-logs">
+  <div class="card">
+    <div class="card-head">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Nhật ký hoạt động
+    </div>
+    <div class="card-body" style="padding:8px"><div class="log-wrap" id="logBox"></div></div>
+  </div>
+</div>
+
+<!-- CONFIG -->
+<div class="view" id="v-cfg">
+  <div class="card">
+    <div class="card-head">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/></svg>
+      Cấu hình Bot
+    </div>
+    <div class="card-body">
+      <div class="field"><label>Mức cược (đ)</label><input id="cAmount" type="number" value="1000" min="100"/></div>
+      <div class="field"><label>Stop-loss (%)</label><input id="cStop" type="number" value="30" min="1" max="100"/></div>
+      <div class="toggle-row">
+        <label>Gấp thếp X2</label>
+        <button class="tog off" id="togX2" onclick="toggleX2()">TẮT</button>
+      </div>
+      <div id="x2Extra" style="display:none">
+        <div class="field"><label>Giới hạn X2 (lần)</label><input id="cX2max" type="number" value="5" min="1" max="10"/></div>
+      </div>
+      <button class="save-btn" onclick="saveConfig()">Lưu cấu hình</button>
+    </div>
+  </div>
+
+  <!-- Chọn chiến lược AI -->
+  <div class="card">
+    <div class="card-head">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      Chiến lược AI
+    </div>
+    <div class="card-body">
+      <div id="rankStatus" style="font-size:12px;color:var(--t2);margin-bottom:12px;font-family:var(--mono)">Đang phân tích thuật toán...</div>
+      <div class="rank-list" id="rankList">
+        <div class="rank-loading">Cần ít nhất 50 phiên dữ liệu để phân tích</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- LOGIN -->
+<div class="view" id="v-login">
+  <div class="login-wrap">
+    <div class="login-title">Đăng nhập</div>
+    <div class="login-sub">Kết nối tài khoản LC79 của bạn</div>
+    <div class="card">
+      <div class="card-body">
+        <div class="field"><label>Tên đăng nhập</label><input id="iUser" placeholder="username" autocomplete="username"/></div>
+        <div class="field"><label>Mật khẩu</label><input id="iPass" type="password" placeholder="••••••••" autocomplete="current-password"/></div>
+        <div class="err-msg" id="loginErr"></div>
+        <button class="save-btn" onclick="doLogin()">Đăng nhập</button>
+        <button onclick="doLogout()" style="width:100%;padding:10px;margin-top:8px;background:transparent;border:1px solid var(--b1);color:var(--t2);border-radius:var(--r2);cursor:pointer;font-size:13px">Đăng xuất</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+</main>
+<nav class="botnav">
+  <button class="active" id="nb-home" onclick="showView('home',this)">
+    <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+    <span>Tổng quan</span>
+  </button>
+  <button id="nb-logs" onclick="showView('logs',this)">
+    <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+    <span>Nhật ký</span>
+  </button>
+  <button id="nb-cfg" onclick="showView('cfg',this)">
+    <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.07 4.93l-1.41 1.41M4.93 4.93l1.41 1.41M12 2v2M12 20v2M2 12h2M20 12h2M19.07 19.07l-1.41-1.41M4.93 19.07l1.41-1.41"/></svg>
+    <span>Cấu hình</span>
+  </button>
+  <button id="nb-login" onclick="showView('login',this)">
+    <svg viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    <span>Tài khoản</span>
+  </button>
+</nav>
+</div>
+
+<script>
+const LC={info:'#58a6ff',pred:'#e3b341',result:'#8b949e',win:'#39d98a',lose:'#f85149',bet:'#bc8cff',warn:'#d29922',error:'#f85149'};
+let st=null,ws=null,x2On=false,selectedStrategy='auto';
+const fmt=n=>Number(n||0).toLocaleString('vi-VN');
+
+const ALGO_NAMES={
+  WM1:'Markov bậc 1',WM2:'Markov bậc 2',WM3:'Markov bậc 3',
+  SF:'Bám cầu',SB3:'Gãy cầu 3',SB5:'Gãy cầu 5',SB7:'Gãy cầu 7',
+  P3:'Pattern 3',P4:'Pattern 4',P5:'Pattern 5',
+  B10:'Bias 10',B20:'Bias 20',ZPG:'Zigzag',MDK:'Momentum',
+  ENT:'Entropy',WRE:'Recent Weight',DP2:'Double Pattern',
+  MVR:'Mean Reversion',ALB:'Alt Break',VWB:'Volume Bias',
+  CY4:'Chu kỳ 4',CY6:'Chu kỳ 6',CY8:'Chu kỳ 8',
+  auto:'Tự động (tất cả)',trend:'Theo cầu',reverse:'Bắt cầu gãy',
+  cycle:'Chu kỳ',recent:'Ngắn hạn'
+};
+
+function showView(v,btn){
+  document.querySelectorAll('.view').forEach(d=>d.classList.remove('show'));
+  document.getElementById('v-'+v).classList.add('show');
+  document.querySelectorAll('.botnav button').forEach(b=>b.classList.remove('active'));
+  const nb=document.getElementById('nb-'+v);
+  if(nb)nb.classList.add('active');
+  if(v==='cfg') loadRanking();
+}
+
+function connect(){
+  const proto=location.protocol==='https:'?'wss':'ws';
+  ws=new WebSocket(proto+'://'+location.host);
+  ws.onopen=()=>{document.getElementById('cDot').style.background='var(--tai)';document.getElementById('cLabel').textContent='Online'};
+  ws.onclose=()=>{document.getElementById('cDot').style.background='var(--xiu)';document.getElementById('cLabel').textContent='Offline';setTimeout(connect,3000)};
+  ws.onmessage=(e)=>{
+    const msg=JSON.parse(e.data);
+    if(msg.type==='state'){st=msg.data;render()}
+    if(msg.type==='logs'){msg.data.slice(0,50).forEach(l=>addLog(l,false))}
+    if(msg.type==='log'){addLog(msg.data,true)}
+  };
+}
+
+function render(){
+  if(!st)return;
+  document.getElementById('dNick').textContent=st.nickname||'—';
+  document.getElementById('dBal').textContent=fmt(st.balance)+'đ';
+  const conn=st.connected;
+  const cEl=document.getElementById('dConn');
+  cEl.className='acct-status '+(conn?'status-on':'status-off');
+  document.getElementById('dConnTxt').textContent=conn?'Đang kết nối':'Mất kết nối';
+  const pred=st.lastPred;
+  const pEl=document.getElementById('dPred');
+  if(pred&&pred.pred){
+    pEl.textContent=pred.pred;pEl.className='pred-big '+(pred.pred==='TAI'?'tai':'xiu');
+    const pct=Math.max(0,Math.min(100,(pred.conf-50)*2));
+    const bar=document.getElementById('dConfBar');
+    bar.style.width=pct+'%';bar.className='conf-bar '+(pred.pred==='TAI'?'tai':'xiu');
+    document.getElementById('dConf').textContent=pred.conf+'%';
+    document.getElementById('dRegime').textContent=pred.regime||'—';
+    document.getElementById('dSig').textContent=pred.n_active??'0';
+  }else{pEl.textContent='—';pEl.className='pred-big empty';}
+  const running=st.autoRunning;
+  document.getElementById('dAutoStatus').textContent=running?'● ĐANG CHẠY':'○ Dừng';
+  document.getElementById('dAutoStatus').style.color=running?'var(--tai)':'var(--t3)';
+  const btn=document.getElementById('autoBtn');
+  if(running){btn.className='auto-btn stop';btn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg> Dừng Auto';}
+  else{btn.className='auto-btn start';btn.innerHTML='<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5,3 19,12 5,21"/></svg> Bật Auto Cược';}
+  document.getElementById('dAmount').textContent=fmt(st.baseAmount)+'đ';
+  document.getElementById('dSession').textContent='#'+(st.sessionId||'—');
+  if(st.x2Enabled){document.getElementById('dX2Row').style.display='flex';document.getElementById('dX2').textContent='Lv.'+st.x2Level+'/'+st.x2MaxLevel;}
+  else{document.getElementById('dX2Row').style.display='none';}
+  document.getElementById('dWin').textContent=st.statWin;
+  document.getElementById('dLose').textContent=st.statLose;
+  const pl=document.getElementById('dPL');
+  const profit=st.statProfit||0;
+  pl.textContent=(profit>=0?'+':'')+fmt(profit);
+  pl.style.color=profit>0?'var(--tai)':profit<0?'var(--xiu)':'var(--t2)';
+  const beads=document.getElementById('dBeads');
+  beads.innerHTML=(st.recentHistory||[]).slice(-20).map(r=>{const t=r==='TAI';return '<div class="bead '+(t?'t':'x')+'">'+(t?'T':'X')+'</div>';}).join('');
+}
+
+function addLog(l,prepend){
+  const box=document.getElementById('logBox');
+  const div=document.createElement('div');div.className='log-item';
+  div.innerHTML='<span class="log-t">'+l.time+'</span><span class="log-m" style="color:'+(LC[l.type]||'var(--t1)')+'">'+l.msg+'</span>';
+  if(prepend)box.insertBefore(div,box.firstChild);else box.appendChild(div);
+  if(box.children.length>200)box.lastChild.remove();
+}
+
+async function api(path,body){
+  try{const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});return r.json();}
+  catch(e){return{error:e.message}}
+}
+
+async function loadRanking(){
+  const list=document.getElementById('rankList');
+  const status=document.getElementById('rankStatus');
+  list.innerHTML='<div class="rank-loading">Đang phân tích...</div>';
+  try{
+    const ranks=await fetch('/api/rank').then(r=>r.json());
+    if(!ranks.length){list.innerHTML='<div class="rank-loading">Cần ít nhất 50 phiên dữ liệu</div>';status.textContent='';return;}
+    status.textContent='Phân tích '+ranks.length+' thuật toán | '+ranks[0].total+' phiên gần nhất';
+    const best=ranks[0];
+
+    // Thêm options combo trước
+    const combos=[
+      {tag:'auto',label:'🧠 Tự động (tất cả thuật toán)',acc:null},
+      {tag:'trend',label:'📈 Theo cầu',acc:null},
+      {tag:'reverse',label:'🔄 Bắt cầu gãy',acc:null},
+      {tag:'cycle',label:'🔁 Chu kỳ',acc:null},
+      {tag:'recent',label:'⚡ Ngắn hạn',acc:null},
+    ];
+
+    list.innerHTML='';
+
+    // Render combo strategies
+    combos.forEach(({tag,label})=>{
+      const div=document.createElement('div');
+      div.className='rank-item'+(selectedStrategy===tag?' selected':'');
+      div.innerHTML='<span class="rank-name">'+label+'</span><span></span>';
+      div.onclick=()=>selectStrategy(tag);
+      list.appendChild(div);
+    });
+
+    // Separator
+    const sep=document.createElement('div');
+    sep.style='font-size:10px;color:var(--t3);text-transform:uppercase;letter-spacing:1px;margin:12px 0 6px;font-family:var(--mono)';
+    sep.textContent='— Thuật toán đơn lẻ (backtest '+ranks[0].total+' phiên)';
+    list.appendChild(sep);
+
+    // Render từng thuật toán với tỉ lệ thắng
+    ranks.forEach(({tag,acc,total},i)=>{
+      const pct=Math.round(acc*100);
+      const isBest=tag===best.tag;
+      const isGood=pct>=54;
+      const div=document.createElement('div');
+      div.className='rank-item'+(isBest?' best':'')+(selectedStrategy===tag?' selected':'');
+      div.innerHTML=
+        '<span class="rank-name">'+(ALGO_NAMES[tag]||tag)+
+        (isBest?'<span class="rank-badge badge-best">✅ Ưu tiên</span>':
+         isGood?'<span class="rank-badge badge-good">👍 Tốt</span>':'')+
+        '</span>'+
+        '<span class="rank-acc" style="color:'+(pct>=55?'var(--tai)':pct>=52?'var(--gold)':'var(--t2)')+'">'+pct+'%</span>';
+      div.onclick=()=>selectStrategy(tag);
+      list.appendChild(div);
+    });
+  }catch(e){list.innerHTML='<div class="rank-loading">Lỗi phân tích</div>';}
+}
+
+function selectStrategy(tag){
+  selectedStrategy=tag;
+  document.querySelectorAll('.rank-item').forEach(el=>el.classList.remove('selected'));
+  event.currentTarget.classList.add('selected');
+  // Áp dụng ngay
+  api('/api/config',{strategy:tag});
+}
+
+async function doLogin(){
+  const err=document.getElementById('loginErr');err.textContent='';
+  const u=document.getElementById('iUser').value.trim();
+  const p=document.getElementById('iPass').value;
+  if(!u||!p){err.textContent='Nhập đủ thông tin';return}
+  err.textContent='⏳ Đang kết nối...';
+  const cfg={baseAmount:+document.getElementById('cAmount').value||1000,x2Enabled:x2On,x2MaxLevel:+document.getElementById('cX2max').value||5,stopLossPercent:+document.getElementById('cStop').value||30,algoEnabled:true,strategy:selectedStrategy};
+  const res=await api('/api/login',{username:u,password:p,config:cfg});
+  if(res.error){err.textContent='❌ '+res.error;}
+  else{err.textContent='✅ Thành công!';setTimeout(()=>showView('home',null),800);}
+}
+
+async function doLogout(){await api('/api/logout',{});st=null;}
+
+async function toggleAuto(){
+  if(!st){showView('login',null);return}
+  await api(st.autoRunning?'/api/auto/stop':'/api/auto/start',{});
+}
+
+function getConfig(){
+  return{baseAmount:+document.getElementById('cAmount').value||1000,x2Enabled:x2On,x2MaxLevel:+document.getElementById('cX2max').value||5,stopLossPercent:+document.getElementById('cStop').value||30,algoEnabled:true,strategy:selectedStrategy};
+}
+
+function toggleX2(){
+  x2On=!x2On;
+  const btn=document.getElementById('togX2');
+  btn.textContent=x2On?'BẬT':'TẮT';btn.className='tog '+(x2On?'on':'off');
+  document.getElementById('x2Extra').style.display=x2On?'block':'none';
+}
+
+async function saveConfig(){
+  if(!st){showView('home',null);return}
+  await api('/api/config',getConfig());
+  showView('home',null);
+}
+
+connect();
+</script>
+</body>
+</html>`;
+  res.send(html);
 });
+
 
 server.listen(PORT, () => {
   console.log(`🚀 AutoLC Web chạy tại port ${PORT}`);
