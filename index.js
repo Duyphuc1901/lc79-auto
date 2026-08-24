@@ -566,7 +566,7 @@ class Lc79Session {
           }
           this._wonThisSession = false;
           this.sessionPlaced = false;
-        }, 3000);
+        }, 8000);
       }
       broadcastState();
     }
