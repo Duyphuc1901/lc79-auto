@@ -286,30 +286,15 @@ function sigCycle(period) {
 }
 
 const SIGNALS = [
-  ['WM1', sigWeightedMarkov(1), 2.0],
-  ['WM2', sigWeightedMarkov(2), 2.5],
-  ['WM3', sigWeightedMarkov(3), 3.0],
-  ['SF',  sigStreakFollow,       1.5],
-  ['SB3', sigStreakBreak(3),     2.0],
-  ['SB5', sigStreakBreak(5),     2.5],
-  ['SB7', sigStreakBreak(7),     3.0],
-  ['P3',  sigPattern(3),         2.0],
-  ['P4',  sigPattern(4),         2.5],
-  ['P5',  sigPattern(5),         3.0],
-  ['B10', sigBias(10),           1.2],
-  ['B20', sigBias(20),           1.2],
-  ['ZPG', sigZigzagPersist,      2.0],
-  ['MDK', sigMomentumDecay,      2.2],
-  // Thuật toán mới
-  ['ENT', sigEntropy,             2.0],
-  ['WRE', sigWeightedRecent,      1.8],
-  ['DP2', sigDoublePattern,       2.2],
-  ['MVR', sigMeanReversion,       1.5],
-  ['ALB', sigAltBreak,            1.8],
-  ['VWB', sigVWBias,              1.6],
-  ['CY4', sigCycle(4),            2.0],
-  ['CY6', sigCycle(6),            2.2],
-  ['CY8', sigCycle(8),            2.0],
+  ['ENT', sigEntropy,          2.2],
+  ['WRE', sigWeightedRecent,   2.0],
+  ['DP2', sigDoublePattern,    2.2],
+  ['MVR', sigMeanReversion,    1.8],
+  ['ALB', sigAltBreak,         2.0],
+  ['VWB', sigVWBias,           1.8],
+  ['CY4', sigCycle(4),         2.0],
+  ['CY6', sigCycle(6),         2.2],
+  ['CY8', sigCycle(8),         2.0],
 ];
 
 const REGIME_MULT = {
@@ -353,11 +338,11 @@ function rankAlgorithms(history) {
 }
 
 function getSignalsByStrategy(strategy) {
-  // Chiến lược combo
-  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['WM1','WM2','WM3','SF','P3','P4','P5','WRE','VWB'].includes(t));
-  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['SB3','SB5','SB7','MDK','MVR','ENT','ALB'].includes(t));
-  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
-  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','WM1','B10','ENT'].includes(t));
+  // Chiến lược combo (9 thuật toán mới)
+  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['WRE','VWB','ALB'].includes(t));
+  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['MVR','ENT','ALB'].includes(t));
+  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8'].includes(t));
+  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','ENT'].includes(t));
   // Thuật toán đơn lẻ
   const single = SIGNALS.find(([t]) => t === strategy);
   if (single) return [single];
@@ -1230,10 +1215,6 @@ let st=null,ws=null,x2On=false,selectedStrategy='auto';
 const fmt=n=>Number(n||0).toLocaleString('vi-VN');
 
 const ALGO_NAMES={
-  WM1:'Markov bậc 1',WM2:'Markov bậc 2',WM3:'Markov bậc 3',
-  SF:'Bám cầu',SB3:'Gãy cầu 3',SB5:'Gãy cầu 5',SB7:'Gãy cầu 7',
-  P3:'Pattern 3',P4:'Pattern 4',P5:'Pattern 5',
-  B10:'Bias 10',B20:'Bias 20',ZPG:'Zigzag',MDK:'Momentum',
   ENT:'Entropy',WRE:'Recent Weight',DP2:'Double Pattern',
   MVR:'Mean Reversion',ALB:'Alt Break',VWB:'Volume Bias',
   CY4:'Chu kỳ 4',CY6:'Chu kỳ 6',CY8:'Chu kỳ 8',
@@ -1349,7 +1330,7 @@ async function loadRanking(){
     if(!ranks.length){
       status.textContent='Chưa đủ dữ liệu — sẽ cập nhật sau vài phiên';
       // Hiện danh sách thuật toán không có tỉ lệ
-      const allTags=['WM1','WM2','WM3','SF','SB3','SB5','SB7','P3','P4','P5','B10','B20','ZPG','MDK','ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
+      const allTags=['ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
       allTags.forEach(tag=>{
         const div=document.createElement('div');
         div.className='rank-item'+(selectedStrategy===tag?' selected':'');
