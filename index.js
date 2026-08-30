@@ -1396,6 +1396,17 @@ function render(){
   document.getElementById('dSession').textContent='#'+(st.sessionId||'—');
   if(st.x2Enabled){document.getElementById('dX2Row').style.display='flex';document.getElementById('dX2').textContent='Lv.'+st.x2Level+'/'+st.x2MaxLevel;}
   else{document.getElementById('dX2Row').style.display='none';}
+  // Sync config form với state server
+  const amt=document.getElementById('cAmount');if(amt&&st.baseAmount)amt.value=st.baseAmount;
+  const stop=document.getElementById('cStop');if(stop&&st.stopLossPercent)stop.value=Math.round(st.stopLossPercent*100);
+  const x2max=document.getElementById('cX2max');if(x2max&&st.x2MaxLevel)x2max.value=st.x2MaxLevel;
+  if(st.x2Enabled!==undefined){
+    x2On=st.x2Enabled;
+    const togX2=document.getElementById('togX2');
+    if(togX2){togX2.textContent=x2On?'BẬT':'TẮT';togX2.className='tog '+(x2On?'on':'off');}
+    const x2Extra=document.getElementById('x2Extra');
+    if(x2Extra)x2Extra.style.display=x2On?'block':'none';
+  }
   document.getElementById('dWin').textContent=st.statWin;
   document.getElementById('dLose').textContent=st.statLose;
   const pl=document.getElementById('dPL');
