@@ -187,7 +187,102 @@ function sigMomentumDecay(sub) {
   return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
 }
 
-// ── THUẬT TOÁN MỚI ─────────────────────────────────────────────────────────
+// ── THUẬT TOÁN CỔ ĐIỂN ──────────────────────────────────────────────────────
+
+function sigWeightedMarkov(order, decay = 0.88) {
+  return (sub) => {
+    if (sub.length <= order + 2) return null;
+    const key = sub.slice(-order).join(',');
+    let wTai = 0, wXiu = 0;
+    const n = sub.length;
+    for (let i = 0; i < n - order; i++) {
+      if (sub.slice(i, i+order).join(',') === key) {
+        const age = n - order - i;
+        const w = Math.pow(decay, age);
+        if (sub[i+order] === 'TAI') wTai += w; else wXiu += w;
+      }
+    }
+    const total = wTai + wXiu;
+    if (total < 1.0) return null;
+    const p = wTai / total;
+    if (p > 0.60) return 'TAI';
+    if (p < 0.40) return 'XIU';
+    return null;
+  };
+}
+
+function sigStreakFollow(sub) {
+  if (sub.length < 2) return null;
+  return sub[sub.length-1];
+}
+
+function sigStreakBreak(minLen) {
+  return (sub) => {
+    if (sub.length < minLen) return null;
+    const last = sub[sub.length-1];
+    let s = 1;
+    for (let i = sub.length-2; i >= 0; i--) {
+      if (sub[i] === last) s++; else break;
+    }
+    if (s < minLen) return null;
+    return last === 'TAI' ? 'XIU' : 'TAI';
+  };
+}
+
+function sigPattern(order) {
+  return (sub) => {
+    if (sub.length <= order) return null;
+    const key = sub.slice(-order).join(',');
+    const c = {};
+    for (let i = 0; i < sub.length - order; i++) {
+      if (sub.slice(i, i+order).join(',') === key) {
+        c[sub[i+order]] = (c[sub[i+order]] || 0) + 1;
+      }
+    }
+    if (!Object.keys(c).length) return null;
+    const total = Object.values(c).reduce((a,b) => a+b, 0);
+    if (total < 3) return null;
+    const best = Object.keys(c).sort((a,b) => c[b]-c[a])[0];
+    if (c[best]/total < 0.60) return null;
+    return best;
+  };
+}
+
+function sigBias(window) {
+  return (sub) => {
+    if (sub.length < window) return null;
+    const rt = sub.slice(-window).filter(v => v === 'TAI').length / window;
+    if (rt > 0.62) return 'XIU';
+    if (rt < 0.38) return 'TAI';
+    return null;
+  };
+}
+
+function sigZigzagPersist(sub) {
+  if (sub.length < 8) return null;
+  const sr6 = Array.from({length:6}, (_,i) => sub[sub.length-1-i] !== sub[sub.length-2-i]).filter(Boolean).length / 6;
+  if (sr6 < 0.65) return null;
+  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
+}
+
+function sigMomentumDecay(sub) {
+  if (sub.length < 20) return null;
+  const runs = [];
+  let cv = sub[0], cl = 1;
+  for (let i = 1; i < sub.length; i++) {
+    if (sub[i] === cv) cl++;
+    else { runs.push(cl); cv = sub[i]; cl = 1; }
+  }
+  runs.push(cl);
+  if (runs.length < 6) return null;
+  const curStreak = runs[runs.length-1];
+  const sorted = [...runs].sort((a,b)=>a-b);
+  const p80 = sorted[Math.min(sorted.length-1, Math.floor(sorted.length * 0.80))];
+  if (curStreak <= p80) return null;
+  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
+}
+
+// ── THUẬT TOÁN MỚI ──────────────────────────────────────────────────────────
 
 // Entropy: chuỗi càng hỗn loạn → theo zigzag, càng đều → theo cầu
 function sigEntropy(sub) {
@@ -286,15 +381,30 @@ function sigCycle(period) {
 }
 
 const SIGNALS = [
-  ['ENT', sigEntropy,          2.2],
-  ['WRE', sigWeightedRecent,   2.0],
-  ['DP2', sigDoublePattern,    2.2],
-  ['MVR', sigMeanReversion,    1.8],
-  ['ALB', sigAltBreak,         2.0],
-  ['VWB', sigVWBias,           1.8],
-  ['CY4', sigCycle(4),         2.0],
-  ['CY6', sigCycle(6),         2.2],
-  ['CY8', sigCycle(8),         2.0],
+  // Cổ điển
+  ['MK1', sigWeightedMarkov(1), 2.0],
+  ['MK2', sigWeightedMarkov(2), 2.5],
+  ['MK3', sigWeightedMarkov(3), 3.0],
+  ['SF',  sigStreakFollow,       1.5],
+  ['SB3', sigStreakBreak(3),     2.0],
+  ['SB5', sigStreakBreak(5),     2.5],
+  ['P3',  sigPattern(3),         2.0],
+  ['P4',  sigPattern(4),         2.5],
+  ['P5',  sigPattern(5),         3.0],
+  ['B10', sigBias(10),           1.2],
+  ['B20', sigBias(20),           1.2],
+  ['ZPG', sigZigzagPersist,      2.0],
+  ['MDK', sigMomentumDecay,      2.2],
+  // Mới
+  ['ENT', sigEntropy,            2.2],
+  ['WRE', sigWeightedRecent,     2.0],
+  ['DP2', sigDoublePattern,      2.2],
+  ['MVR', sigMeanReversion,      1.8],
+  ['ALB', sigAltBreak,           2.0],
+  ['VWB', sigVWBias,             1.8],
+  ['CY4', sigCycle(4),           2.0],
+  ['CY6', sigCycle(6),           2.2],
+  ['CY8', sigCycle(8),           2.0],
 ];
 
 const REGIME_MULT = {
@@ -312,10 +422,10 @@ function getRegimeMult(regime, tag) {
 }
 
 // Backtest một signal đơn trên toàn bộ lịch sử
-function backtestSingle(history, fn, minSamples = 20) {
+function backtestSingle(history, fn, minSamples = 8) {
   if (history.length < minSamples + 5) return null;
   let hits = 0, total = 0;
-  const start = Math.max(30, history.length - 300); // chỉ dùng 300 phiên gần nhất
+  const start = Math.max(10, history.length - 300);
   for (let i = start; i < history.length; i++) {
     const sub = history.slice(0, i);
     const pred = fn(sub);
@@ -338,11 +448,10 @@ function rankAlgorithms(history) {
 }
 
 function getSignalsByStrategy(strategy) {
-  // Chiến lược combo (9 thuật toán mới)
-  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['WRE','VWB','ALB'].includes(t));
-  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['MVR','ENT','ALB'].includes(t));
-  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8'].includes(t));
-  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','ENT'].includes(t));
+  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['MK1','MK2','MK3','SF','P3','P4','P5','WRE','VWB'].includes(t));
+  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['SB3','SB5','MDK','MVR','ENT','ALB'].includes(t));
+  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
+  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','B10','ENT','MK1'].includes(t));
   // Thuật toán đơn lẻ
   const single = SIGNALS.find(([t]) => t === strategy);
   if (single) return [single];
@@ -549,11 +658,21 @@ class Lc79Session {
       this._reconnectCount = (this._reconnectCount || 0) + 1;
       addLog('warn', `🔄 Mất kết nối (lần ${this._reconnectCount}) — thử lại sau 5s`);
       broadcastState();
-      this._reconnectTimer = setTimeout(() => {
-        if (this.running) {
-          this.autoRunning = wasAuto;
-          this.connect();
+      this._reconnectTimer = setTimeout(async () => {
+        if (!this.running) return;
+        this.autoRunning = wasAuto;
+        // Cứ mỗi 3 lần mất kết nối → lấy token mới
+        if (this._reconnectCount % 3 === 0 && this.username && this.password) {
+          try {
+            addLog('info', '🔑 Lấy token mới...');
+            const auth = await loginAndGetToken(this.username, this.password);
+            this.token = auth.token;
+            addLog('info', '✅ Token mới OK — kết nối lại');
+          } catch(e) {
+            addLog('error', `❌ Lấy token thất bại: ${e.message}`);
+          }
         }
+        this.connect();
       }, 5000);
     });
     this.ws.on('error', (e) => {
@@ -1215,6 +1334,10 @@ let st=null,ws=null,x2On=false,selectedStrategy='auto';
 const fmt=n=>Number(n||0).toLocaleString('vi-VN');
 
 const ALGO_NAMES={
+  MK1:'Markov bậc 1',MK2:'Markov bậc 2',MK3:'Markov bậc 3',
+  SF:'Bám cầu',SB3:'Gãy cầu 3',SB5:'Gãy cầu 5',
+  P3:'Pattern 3',P4:'Pattern 4',P5:'Pattern 5',
+  B10:'Bias 10',B20:'Bias 20',ZPG:'Zigzag',MDK:'Momentum',
   ENT:'Entropy',WRE:'Recent Weight',DP2:'Double Pattern',
   MVR:'Mean Reversion',ALB:'Alt Break',VWB:'Volume Bias',
   CY4:'Chu kỳ 4',CY6:'Chu kỳ 6',CY8:'Chu kỳ 8',
@@ -1330,7 +1453,7 @@ async function loadRanking(){
     if(!ranks.length){
       status.textContent='Chưa đủ dữ liệu — sẽ cập nhật sau vài phiên';
       // Hiện danh sách thuật toán không có tỉ lệ
-      const allTags=['ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
+      const allTags=['MK1','MK2','MK3','SF','SB3','SB5','P3','P4','P5','B10','B20','ZPG','MDK','ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
       allTags.forEach(tag=>{
         const div=document.createElement('div');
         div.className='rank-item'+(selectedStrategy===tag?' selected':'');
