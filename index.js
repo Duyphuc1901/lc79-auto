@@ -1597,7 +1597,7 @@ function renderHourChart(history){
     const winH=Math.max(4,Math.round((d.win/maxTotal)*72));
     const loseH=Math.max(4,Math.round((d.lose/maxTotal)*72));
     const wr=Math.round(d.win/total*100);
-    return '<div class="hour-bar-wrap" title="'+h+': '+d.win+'T/'+d.lose+'X ('+wr+'%)" onclick="showHourTip(this,\''+h+'\','+d.win+','+d.lose+')">' +
+    return '<div class="hour-bar-wrap" data-h="'+h+'" data-w="'+d.win+'" data-l="'+d.lose+'" onclick="showHourTip(this)">' +
       '<div class="hour-bar" style="height:'+winH+'px;background:var(--tai);opacity:.85"></div>' +
       '<div class="hour-bar" style="height:'+loseH+'px;background:var(--xiu);opacity:.85;border-radius:0 0 3px 3px"></div>' +
       '<div class="hour-label">'+h.split(':')[0]+'h</div>' +
@@ -1605,12 +1605,12 @@ function renderHourChart(history){
   }).join('');
 }
 
-function showHourTip(el,hour,win,lose){
+function showHourTip(el){
+  const hour=el.dataset.h, win=+el.dataset.w, lose=+el.dataset.l;
   const total=win+lose;
   const wr=Math.round(win/total*100);
-  // Flash highlight
   el.querySelectorAll('.hour-bar').forEach(b=>{b.style.opacity='1';setTimeout(()=>b.style.opacity='.85',300);});
-  alert(hour+': '+win+' thắng / '+lose+' thua ('+wr+'% WR)');
+  alert(hour+': '+win+' thang / '+lose+' thua ('+wr+'% WR)');
 }
 
 function addLog(l,prepend){
