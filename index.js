@@ -50,7 +50,9 @@ function addLog(type, msg) {
   broadcast({ type: 'log', data: entry });
 }
 
-// ─── PREDICTION ENGINE (ported from Python V10) ───────────────────────────────
+// ─── PREDICTION ENGINE ────────────────────────────────────────────────────────
+
+// Phát hiện chế độ thị trường
 function detectRegime(seq) {
   if (seq.length < 10) return 'CHOPPY';
   const tail = seq.slice(-11);
@@ -93,101 +95,7 @@ function backtestSplit(seq, fn, window = 120, cap = 200) {
   return [acc, total, consistency];
 }
 
-// Signal functions
-function sigWeightedMarkov(order, decay = 0.88) {
-  return (sub) => {
-    if (sub.length <= order + 2) return null;
-    const key = sub.slice(-order).join(',');
-    let wTai = 0, wXiu = 0;
-    const n = sub.length;
-    for (let i = 0; i < n - order; i++) {
-      if (sub.slice(i, i+order).join(',') === key) {
-        const age = n - order - i;
-        const w = Math.pow(decay, age);
-        if (sub[i+order] === 'TAI') wTai += w; else wXiu += w;
-      }
-    }
-    const total = wTai + wXiu;
-    if (total < 1.0) return null;
-    const p = wTai / total;
-    if (p > 0.60) return 'TAI';
-    if (p < 0.40) return 'XIU';
-    return null;
-  };
-}
-
-function sigStreakFollow(sub) {
-  if (sub.length < 2) return null;
-  return sub[sub.length-1];
-}
-
-function sigStreakBreak(minLen) {
-  return (sub) => {
-    if (sub.length < minLen) return null;
-    const last = sub[sub.length-1];
-    let s = 1;
-    for (let i = sub.length-2; i >= 0; i--) {
-      if (sub[i] === last) s++; else break;
-    }
-    if (s < minLen) return null;
-    return last === 'TAI' ? 'XIU' : 'TAI';
-  };
-}
-
-function sigPattern(order) {
-  return (sub) => {
-    if (sub.length <= order) return null;
-    const key = sub.slice(-order).join(',');
-    const c = {};
-    for (let i = 0; i < sub.length - order; i++) {
-      if (sub.slice(i, i+order).join(',') === key) {
-        c[sub[i+order]] = (c[sub[i+order]] || 0) + 1;
-      }
-    }
-    if (!Object.keys(c).length) return null;
-    const total = Object.values(c).reduce((a,b) => a+b, 0);
-    if (total < 3) return null;
-    const best = Object.keys(c).sort((a,b) => c[b]-c[a])[0];
-    if (c[best]/total < 0.60) return null;
-    return best;
-  };
-}
-
-function sigBias(window) {
-  return (sub) => {
-    if (sub.length < window) return null;
-    const rt = sub.slice(-window).filter(v => v === 'TAI').length / window;
-    if (rt > 0.62) return 'XIU';
-    if (rt < 0.38) return 'TAI';
-    return null;
-  };
-}
-
-function sigZigzagPersist(sub) {
-  if (sub.length < 8) return null;
-  const sr6 = Array.from({length:6}, (_,i) => sub[sub.length-1-i] !== sub[sub.length-2-i]).filter(Boolean).length / 6;
-  if (sr6 < 0.65) return null;
-  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
-}
-
-function sigMomentumDecay(sub) {
-  if (sub.length < 20) return null;
-  const runs = [];
-  let cv = sub[0], cl = 1;
-  for (let i = 1; i < sub.length; i++) {
-    if (sub[i] === cv) cl++;
-    else { runs.push(cl); cv = sub[i]; cl = 1; }
-  }
-  runs.push(cl);
-  if (runs.length < 6) return null;
-  const curStreak = runs[runs.length-1];
-  const sorted = [...runs].sort((a,b)=>a-b);
-  const p80 = sorted[Math.min(sorted.length-1, Math.floor(sorted.length * 0.80))];
-  if (curStreak <= p80) return null;
-  return sub[sub.length-1] === 'TAI' ? 'XIU' : 'TAI';
-}
-
-// ── THUẬT TOÁN CỔ ĐIỂN ──────────────────────────────────────────────────────
+// ── THUẬT TOÁN ──────────────────────────────────────────────────────────────
 
 function sigWeightedMarkov(order, decay = 0.88) {
   return (sub) => {
@@ -283,6 +191,180 @@ function sigMomentumDecay(sub) {
 }
 
 // ── THUẬT TOÁN MỚI ──────────────────────────────────────────────────────────
+// ── THUẬT TOÁN CHUYÊN SÂU 100 PHIÊN ────────────────────────────────────────
+
+// HMM-lite: ước lượng xác suất chuyển trạng thái có trọng số thời gian
+function sigHMM(sub) {
+  if (sub.length < 30) return null;
+  const seq = sub.slice(-100);
+  const trans = { TAI_TAI:0, TAI_XIU:0, XIU_TAI:0, XIU_XIU:0 };
+  for (let i = 0; i < seq.length-1; i++) {
+    const key = seq[i]+'_'+seq[i+1];
+    if (trans[key] !== undefined) trans[key] += Math.pow(0.97, seq.length-2-i);
+  }
+  const last = seq[seq.length-1];
+  const toTai = last==='TAI' ? trans.TAI_TAI : trans.XIU_TAI;
+  const toXiu = last==='TAI' ? trans.TAI_XIU : trans.XIU_XIU;
+  const total = toTai + toXiu;
+  if (total < 2) return null;
+  const p = toTai / total;
+  if (p > 0.62) return 'TAI';
+  if (p < 0.38) return 'XIU';
+  return null;
+}
+
+// Fourier-lite: phát hiện tần suất dao động dominant
+function sigFourier(sub) {
+  if (sub.length < 40) return null;
+  const seq = sub.slice(-80).map(v => v === 'TAI' ? 1 : -1);
+  const n = seq.length;
+  // Tính power spectrum đơn giản cho chu kỳ 2-16
+  let bestPeriod = 0, bestPower = 0;
+  for (let p = 2; p <= 16; p++) {
+    let re = 0, im = 0;
+    for (let i = 0; i < n; i++) {
+      re += seq[i] * Math.cos(2 * Math.PI * i / p);
+      im += seq[i] * Math.sin(2 * Math.PI * i / p);
+    }
+    const power = Math.sqrt(re*re + im*im) / n;
+    if (power > bestPower) { bestPower = power; bestPeriod = p; }
+  }
+  if (bestPower < 0.15) return null;
+  // Dự đoán dựa trên pha hiện tại của chu kỳ dominant
+  const phase = n % bestPeriod;
+  const offset = Math.round(bestPeriod / 2);
+  const refIdx = n - phase - offset;
+  if (refIdx < 0 || refIdx >= n) return null;
+  return seq[refIdx] > 0 ? 'TAI' : 'XIU';
+}
+
+// Autocorrelation: tìm lag có tương quan cao nhất
+function sigAutoCorr(sub) {
+  if (sub.length < 40) return null;
+  const seq = sub.slice(-80).map(v => v === 'TAI' ? 1 : -1);
+  const n = seq.length;
+  const mean = seq.reduce((s,v) => s+v, 0) / n;
+  const centered = seq.map(v => v - mean);
+  const variance = centered.reduce((s,v) => s+v*v, 0);
+  if (variance === 0) return null;
+  let bestLag = 0, bestCorr = 0;
+  for (let lag = 1; lag <= 20; lag++) {
+    let corr = 0;
+    for (let i = 0; i < n - lag; i++) corr += centered[i] * centered[i+lag];
+    corr /= variance;
+    if (Math.abs(corr) > Math.abs(bestCorr)) { bestCorr = corr; bestLag = lag; }
+  }
+  if (Math.abs(bestCorr) < 0.15) return null;
+  const refVal = seq[n - bestLag];
+  if (bestCorr > 0) return refVal > 0 ? 'TAI' : 'XIU'; // positive corr → same
+  else return refVal > 0 ? 'XIU' : 'TAI'; // negative corr → opposite
+}
+
+// Bayesian streak: xác suất Bayes cập nhật theo chuỗi
+function sigBayesStreak(sub) {
+  if (sub.length < 20) return null;
+  const seq = sub.slice(-50);
+  // Prior: 50/50
+  let pTai = 0.5;
+  const alpha = 0.3; // learning rate
+  for (let i = 0; i < seq.length - 1; i++) {
+    const actual = seq[i] === 'TAI' ? 1 : 0;
+    pTai = pTai * (1 - alpha) + actual * alpha;
+  }
+  if (pTai > 0.62) return 'TAI';
+  if (pTai < 0.38) return 'XIU';
+  return null;
+}
+
+// Run-length encoding analysis: phân tích độ dài các chuỗi bệt
+function sigRLE(sub) {
+  if (sub.length < 30) return null;
+  const seq = sub.slice(-80);
+  const runs = [];
+  let cur = seq[0], len = 1;
+  for (let i = 1; i < seq.length; i++) {
+    if (seq[i] === cur) len++;
+    else { runs.push({v:cur, l:len}); cur=seq[i]; len=1; }
+  }
+  runs.push({v:cur, l:len});
+  if (runs.length < 5) return null;
+  const avgLen = runs.reduce((s,r) => s+r.l, 0) / runs.length;
+  const last = runs[runs.length-1];
+  // Nếu chuỗi hiện tại đã dài hơn trung bình → khả năng gãy cao
+  if (last.l >= avgLen * 1.5) return last.v === 'TAI' ? 'XIU' : 'TAI';
+  // Nếu chuỗi ngắn hơn trung bình → tiếp tục
+  if (last.l < avgLen * 0.6) return last.v;
+  return null;
+}
+
+// Conditional probability 3-context: xác suất có điều kiện với context 3 phiên
+function sigCondProb3(sub) {
+  if (sub.length < 40) return null;
+  const seq = sub.slice(-100);
+  const n = seq.length;
+  const ctx = seq.slice(-3).join(',');
+  const counts = {};
+  for (let i = 3; i < n; i++) {
+    const key = seq.slice(i-3,i).join(',');
+    if (!counts[key]) counts[key] = {TAI:0, XIU:0};
+    counts[key][seq[i]]++;
+  }
+  const c = counts[ctx];
+  if (!c) return null;
+  const total = c.TAI + c.XIU;
+  if (total < 5) return null;
+  const pTai = c.TAI / total;
+  if (pTai > 0.65) return 'TAI';
+  if (pTai < 0.35) return 'XIU';
+  return null;
+}
+
+// Trend strength index: đo sức mạnh xu hướng
+function sigTSI(sub) {
+  if (sub.length < 30) return null;
+  const seq = sub.slice(-60).map(v => v === 'TAI' ? 1 : -1);
+  const n = seq.length;
+  // Double-smoothed momentum
+  const mom = seq.map((v,i) => i>0 ? v - seq[i-1] : 0);
+  function ema(arr, period) {
+    const k = 2/(period+1);
+    let e = arr[0];
+    return arr.map(v => { e = v*k + e*(1-k); return e; });
+  }
+  const smooth1 = ema(ema(mom, 5), 3);
+  const absMom = mom.map(Math.abs);
+  const smooth2 = ema(ema(absMom, 5), 3);
+  const last = smooth1[n-1];
+  const denom = smooth2[n-1];
+  if (denom === 0) return null;
+  const tsi = last / denom;
+  if (tsi > 0.3) return 'TAI';
+  if (tsi < -0.3) return 'XIU';
+  return null;
+}
+
+// Adaptive threshold: tự điều chỉnh ngưỡng theo volatility
+function sigAdaptive(sub) {
+  if (sub.length < 40) return null;
+  const seq = sub.slice(-100);
+  const n = seq.length;
+  // Tính volatility (switching rate) theo cửa sổ động
+  const windows = [10, 20, 30];
+  let votes = 0;
+  for (const w of windows) {
+    const tail = seq.slice(-w);
+    const switches = tail.filter((v,i) => i>0 && v!==tail[i-1]).length;
+    const sr = switches / (w-1);
+    const last = seq[n-1];
+    if (sr > 0.65) votes += (last === 'TAI' ? -1 : 1); // zigzag → đảo
+    else if (sr < 0.4) votes += (last === 'TAI' ? 1 : -1); // bệt → theo
+  }
+  if (votes >= 2) return seq[n-1] === 'TAI' ? 'XIU' : 'TAI';
+  if (votes <= -2) return seq[n-1];
+  return null;
+}
+
+
 
 // Entropy: chuỗi càng hỗn loạn → theo zigzag, càng đều → theo cầu
 function sigEntropy(sub) {
@@ -405,6 +487,15 @@ const SIGNALS = [
   ['CY4', sigCycle(4),           2.0],
   ['CY6', sigCycle(6),           2.2],
   ['CY8', sigCycle(8),           2.0],
+  // Chuyên sâu 100 phiên
+  ['HMM', sigHMM,                2.5],
+  ['FOU', sigFourier,            2.0],
+  ['ACR', sigAutoCorr,           2.2],
+  ['BAY', sigBayesStreak,        2.0],
+  ['RLE', sigRLE,                2.2],
+  ['CP3', sigCondProb3,          2.5],
+  ['TSI', sigTSI,                2.0],
+  ['ADP', sigAdaptive,           2.3],
 ];
 
 const REGIME_MULT = {
@@ -448,10 +539,11 @@ function rankAlgorithms(history) {
 }
 
 function getSignalsByStrategy(strategy) {
-  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['MK1','MK2','MK3','SF','P3','P4','P5','WRE','VWB'].includes(t));
-  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['SB3','SB5','MDK','MVR','ENT','ALB'].includes(t));
-  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2'].includes(t));
-  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','B10','ENT','MK1'].includes(t));
+  if (strategy === 'trend')   return SIGNALS.filter(([t]) => ['MK1','MK2','MK3','SF','P3','P4','P5','WRE','VWB','HMM','BAY'].includes(t));
+  if (strategy === 'reverse') return SIGNALS.filter(([t]) => ['SB3','SB5','MDK','MVR','ENT','ALB','RLE','ADP'].includes(t));
+  if (strategy === 'cycle')   return SIGNALS.filter(([t]) => ['CY4','CY6','CY8','DP2','FOU','ACR'].includes(t));
+  if (strategy === 'recent')  return SIGNALS.filter(([t]) => ['WRE','VWB','B10','ENT','MK1','ADP'].includes(t));
+  if (strategy === 'deep')    return SIGNALS.filter(([t]) => ['HMM','FOU','ACR','BAY','RLE','CP3','TSI','ADP'].includes(t));
   // Thuật toán đơn lẻ
   const single = SIGNALS.find(([t]) => t === strategy);
   if (single) return [single];
@@ -466,7 +558,7 @@ function predictNext(history, strategy = 'auto') {
   const regime = detectRegime(seq);
   const votes = [];
   const activeSignals = [];
-  const activeSet = getSignalsByStrategy(strategy);
+  const activeSet = getSignalsByStrategy(strategy, seq);
   for (const [tag, fn, capW] of activeSet) {
     const [acc, total, consistency] = backtestSplit(seq, fn);
     if (acc === null || acc <= 0.50) continue;
@@ -1458,8 +1550,10 @@ const ALGO_NAMES={
   ENT:'Entropy',WRE:'Recent Weight',DP2:'Double Pattern',
   MVR:'Mean Reversion',ALB:'Alt Break',VWB:'Volume Bias',
   CY4:'Chu kỳ 4',CY6:'Chu kỳ 6',CY8:'Chu kỳ 8',
+  HMM:'HMM Markov',FOU:'Fourier Cycle',ACR:'Auto-Correlation',
+  BAY:'Bayesian',RLE:'Run-Length',CP3:'Cond.Prob 3',TSI:'Trend Strength',ADP:'Adaptive',
   auto:'Tự động (tất cả)',trend:'Theo cầu',reverse:'Bắt cầu gãy',
-  cycle:'Chu kỳ',recent:'Ngắn hạn'
+  cycle:'Chu kỳ',recent:'Ngắn hạn',deep:'Chuyên sâu 100 phiên'
 };
 
 function showView(v,btn){
@@ -1631,7 +1725,8 @@ async function loadRanking(){
   const status=document.getElementById('rankStatus');
   list.innerHTML='';
   const combos=[
-    {tag:'auto',label:'🧠 Tự động (tất cả thuật toán)'},
+    {tag:'auto',label:'🧠 Tự động (tất cả)'},
+    {tag:'deep',label:'🔬 Chuyên sâu 100 phiên'},
     {tag:'trend',label:'📈 Theo cầu'},
     {tag:'reverse',label:'🔄 Bắt cầu gãy'},
     {tag:'cycle',label:'🔁 Chu kỳ'},
@@ -1653,7 +1748,7 @@ async function loadRanking(){
     const ranks=await fetch('/api/rank').then(r=>r.json());
     if(!ranks.length){
       status.textContent='Chưa đủ dữ liệu';
-      const allTags=['MK1','MK2','MK3','SF','SB3','SB5','P3','P4','P5','B10','B20','ZPG','MDK','ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8'];
+      const allTags=['MK1','MK2','MK3','SF','SB3','SB5','P3','P4','P5','B10','B20','ZPG','MDK','ENT','WRE','DP2','MVR','ALB','VWB','CY4','CY6','CY8','HMM','FOU','ACR','BAY','RLE','CP3','TSI','ADP'];
       allTags.forEach(tag=>{
         const div=document.createElement('div');
         div.className='rank-item'+(selectedStrategy===tag?' selected':'');
