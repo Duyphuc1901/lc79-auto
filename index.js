@@ -844,8 +844,10 @@ class Lc79Session {
             this.currentAmount = this.baseAmount;
           }
           // Stop loss
-          if (this.statProfit < 0 && Math.abs(this.statProfit) > this.balance * this.stopLossPercent) {
-            addLog('warn', `⚠️ Stop-loss. Dừng auto.`);
+          // Stop-loss: chỉ kích hoạt khi balance > 0 và stopLossPercent < 1.0 (không phải 100%)
+          if (this.stopLossPercent < 1.0 && this.balance > 0 && 
+              this.statProfit < 0 && Math.abs(this.statProfit) > this.balance * this.stopLossPercent) {
+            addLog('warn', `⚠️ Stop-loss kích hoạt (lỗ ${Math.round(this.stopLossPercent*100)}%). Dừng auto.`);
             this.autoRunning = false; broadcastState(); return;
           }
           const side = this.fixedSide || (this.lastPred ? this.lastPred.pred : 'TAI');
@@ -933,7 +935,9 @@ class Lc79Session {
             this.currentLoseStreak++;
             this.currentWinStreak = 0;
             if (this.currentLoseStreak > this.maxLoseStreak) this.maxLoseStreak = this.currentLoseStreak;
-            this.betHistory.push({ time: Date.now(), result: 'lose', amount: _betAmt, hour: new Date().toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit'}) });
+            const _now2 = new Date();
+            const _hStr2 = _now2.toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit'}).replace(/[^0-9]/g,'').padStart(2,'0');
+            this.betHistory.push({ time: Date.now(), result: 'lose', amount: _betAmt, hour: _hStr2+'h' });
             if (this.betHistory.length > 500) this.betHistory.shift();
             if (this.autoRunning && this.x2Enabled) {
               this.lastLossAmount = _betAmt;
@@ -978,7 +982,9 @@ class Lc79Session {
         this.currentWinStreak++;
         this.currentLoseStreak = 0;
         if (this.currentWinStreak > this.maxWinStreak) this.maxWinStreak = this.currentWinStreak;
-        this.betHistory.push({ time: Date.now(), result: 'win', amount: profit, hour: new Date().toLocaleTimeString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit'}) });
+        const _now = new Date();
+        const _hStr = _now.toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit'}).replace(/[^0-9]/g,'').padStart(2,'0');
+        this.betHistory.push({ time: Date.now(), result: 'win', amount: profit, hour: _hStr+'h' });
         if (this.betHistory.length > 500) this.betHistory.shift();
       }
 
